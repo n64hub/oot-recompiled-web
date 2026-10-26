@@ -4040,7 +4040,12 @@ namespace {
                 // name (a slot saved over, the autosaves stepping back, a moment reserved and
                 // another saved where it was) is a new picture to the interface's cache, which
                 // otherwise keeps the first one it loaded under a name, or a failed load, for good.
+#ifdef __EMSCRIPTEN__
+                // Emscripten's libc++ counts a file's time in an __int128, which no to_string takes.
+                const long long stamp = static_cast<long long>(std::filesystem::last_write_time(thumb, ec).time_since_epoch().count());
+#else
                 const auto stamp = std::filesystem::last_write_time(thumb, ec).time_since_epoch().count();
+#endif
                 src += "?v=" + std::to_string(stamp) + "-" + std::to_string(std::filesystem::file_size(thumb, ec));
                 rml += "<img class=\"thumb\" src=\"" + escape(src) + "\"/>";
             }
