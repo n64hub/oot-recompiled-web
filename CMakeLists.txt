@@ -7,7 +7,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-project(OoTRecompiled VERSION 0.5.0 LANGUAGES C CXX)
+project(OoTRecompiled VERSION 0.6.1 LANGUAGES C CXX)
 
 # With Emscripten (emcmake cmake), the game builds as a page for a browser instead: web/page.cmake, BUILDING.md.
 if (EMSCRIPTEN)
@@ -132,6 +132,10 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lunasvg ${CMAKE_BINARY_DIR}/lunasvg)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(RMLUI_BACKEND "native" CACHE STRING "" FORCE)
+# The SVG plugin (the menus plan, phase 86), compiled into RmlUi's core against the lunasvg built
+# just above, whose lunasvg::lunasvg alias is the target RmlUi looks for. Line icons and the
+# medallion's layers are vectors, sharp at every interface size.
+set(RMLUI_SVG_PLUGIN ON CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi ${CMAKE_BINARY_DIR}/RmlUi)
 
 # ---------------------------------------------------------------------------------------------
@@ -194,6 +198,11 @@ add_library(RecompiledFuncs STATIC ${RECOMPILED_FUNCS})
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# FreeType at this level too: our module (cmake/FindFreetype.cmake) defines an imported target,
+# and an imported target exists only in the directory that found it, so RmlUi's finding it does
+# not make it visible here. The fonts' self test reads the faces with it directly.
+find_package(Freetype REQUIRED)
+
 # The pinned commits, read from the checkouts at BUILD time rather than typed into a document.
 # A provenance line somebody has to remember to update is a provenance line that is wrong.
 function(read_sha OUT_VAR DIR)
@@ -253,6 +262,24 @@ add_custom_command(
     DEPENDS "${UI_SHADER}" "${CMAKE_SOURCE_DIR}/tools/embed_binary.py"
     COMMENT "Compiling the mark's pixel shader")
 
+# The tokens as a C++ header (the menus plan, phase 89): the same values the stylesheets use, for
+# the installer's GDI drawing and the input layer's repeat timing, regenerated whenever a token
+# changes so native code can never hold a stale copy.
+add_custom_command(
+    OUTPUT "${UI_SHADER_DIR}/ui_tokens.h"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/tokens_header.py" "${UI_SHADER_DIR}/ui_tokens.h"
+    DEPENDS "${CMAKE_SOURCE_DIR}/assets/ui/tokens.rcss" "${CMAKE_SOURCE_DIR}/tools/tokens_header.py"
+    COMMENT "Writing the interface tokens header")
+
+# The gradient decorators' pixel shader (the menus plan, phase 87), a fourth entry point.
+add_custom_command(
+    OUTPUT "${UI_SHADER_DIR}/ui_gradient_ps.hlsl.dxil.h"
+    COMMAND "${UI_DXC}" -T ps_6_0 -E PSGradient -Fo "${UI_SHADER_DIR}/ui_gradient_ps.dxil" "${UI_SHADER}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/embed_binary.py"
+            "${UI_SHADER_DIR}/ui_gradient_ps.dxil" ui_gradient_ps_dxil "${UI_SHADER_DIR}/ui_gradient_ps.hlsl.dxil.h"
+    DEPENDS "${UI_SHADER}" "${CMAKE_SOURCE_DIR}/tools/embed_binary.py"
+    COMMENT "Compiling the gradient pixel shader")
+
 # The patch binary, embedded so the runtime can copy a patch's own data (its constants and
 # initialized statics) into the emulated memory at start. The patch CODE is linked natively and
 # runs without this; the DATA does not exist in that memory without it, and a patch that reads a
@@ -278,6 +305,25 @@ add_executable(OoTRecompiled
     src/main/probe.cpp
     src/ui/ui_render.cpp
     src/ui/ui_shell.cpp
+    src/ui/ui_fonts.cpp
+    src/ui/ui_vectors.cpp
+    src/ui/ui_gradient.cpp
+    src/ui/input/ui_input_core.cpp
+    src/ui/input/ui_input.cpp
+    src/ui/nav/nav_engine.cpp
+    src/ui/nav/nav_values.cpp
+    src/ui/nav/nav_mouse.cpp
+    src/ui/nav/nav_rml.cpp
+    src/ui/models/rows_model.cpp
+    src/ui/models/shell_model.cpp
+    src/ui/models/credits.cpp
+    src/ui/prompts/prompts.cpp
+    src/ui/prompts/photo_guide.cpp
+    src/ui/keyboard/keyboard.cpp
+    src/ui/sound/ui_sound.cpp
+    src/ui/sound/synth.cpp
+    src/ui/sound/game_queue.cpp
+    src/ui/shell/shell.cpp
     src/ui/ui_settings.cpp
     src/ui/ui_lighting.cpp
     src/ui/ui_controls.cpp
@@ -291,16 +337,20 @@ add_executable(OoTRecompiled
     src/main/recorder.cpp
     src/main/sweep.cpp
     src/main/screenshots.cpp
+    src/main/capture_size.cpp
     src/main/video.cpp
     src/main/photo.cpp
     src/game/hud.cpp
     src/main/microphone.cpp
     src/main/shots.cpp
     src/game/moments.cpp
+    src/game/warp_places.cpp
     src/ui/ui_system.cpp
     "${UI_SHADER_DIR}/ui_vs.hlsl.dxil.h"
     "${UI_SHADER_DIR}/ui_ps.hlsl.dxil.h"
     "${UI_SHADER_DIR}/ui_mark_ps.hlsl.dxil.h"
+    "${UI_SHADER_DIR}/ui_gradient_ps.hlsl.dxil.h"
+    "${UI_SHADER_DIR}/ui_tokens.h"
     src/game/rt64_render_context.cpp
     src/game/texture_packs.cpp
     src/game/sections.cpp
@@ -308,6 +358,7 @@ add_executable(OoTRecompiled
     src/game/game_state.cpp
     src/game/light_list.cpp
     src/game/air_movers.cpp
+    src/game/actor_room.cpp
     src/game/room_pieces.cpp
     src/game/dl_check.cpp
     src/game/actor_registry.cpp
@@ -421,6 +472,10 @@ target_link_libraries(OoTRecompiled PRIVATE
     ultramodern
     rt64
     RmlUi::Core
+    # FreeType directly as well, for the fonts' self test (src/ui/ui_fonts.cpp).
+    Freetype::Freetype
+    # lunasvg directly as well, for the vectors' self test (src/ui/ui_vectors.cpp).
+    lunasvg::lunasvg
     SDL2
     Winmm.lib
     # The update check, which uses the operating system's own HTTP client rather than a
@@ -460,6 +515,100 @@ target_include_directories(OoTRecompiled PRIVATE
 target_include_directories(OoTRecompiled SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty")
 
+# THE INTERFACE GATES (the menus plan, phase 83 onward), run before the program links, every build.
+# tokens.rcss is the one file allowed to hold literal values; every other stylesheet and every
+# document's own styles must reference it. The checker existed for months and ran in no build, and
+# three literals had slipped in by the time it was wired up (2026-10-12). A rule that is not run
+# is not a rule.
+add_custom_target(ui_gates ALL
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_tokens.py" "${CMAKE_SOURCE_DIR}/assets/ui"
+    # Every bundled face, icon and drawn layer: present, its hash as listed, its license present.
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_tokens.py" --licenses "${CMAKE_SOURCE_DIR}/assets"
+    # Every var(--name) names a token that exists: a dangling one fails silently in RmlUi.
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_tokens.py" --unresolved "${CMAKE_SOURCE_DIR}/assets/ui"
+    # The medallion's layers and their stylesheet, exactly as the design decision's numbers draw them.
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/medallion.py" --check
+    # The contour survey, regenerated byte for byte and seamless across its edges.
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/generate_contours.py" --check
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Checking the interface's tokens"
+    VERBATIM)
+add_dependencies(OoTRecompiled ui_gates)
+# The logo, the splash's layers and the prompts' plates, exactly as the design canvas draws them
+# (tools/brand_art.mjs, phase 96). The drawing is the canvas's own JavaScript, so this gate needs
+# Node; a machine without it builds without the check rather than without the program.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_custom_target(ui_brand_art ALL
+        COMMAND "${NODE_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/brand_art.mjs" --check
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Checking the logo and the prompts against the design"
+        VERBATIM)
+    add_dependencies(OoTRecompiled ui_brand_art)
+endif()
+
+# THE INTERFACE'S HEADLESS TESTS (the menus plan, phase 90 onward): its pure logic (the input
+# stream's repeat schedule and device families, the gradient ramps, and the navigation as later
+# phases add it), built as its own small program and run before the game links. No SDL, no
+# RmlUi, no window: a failure here stops the build, which is the point.
+add_executable(ui_tests
+    src/ui/tests/ui_tests_main.cpp
+    src/ui/input/ui_input_core.cpp
+    src/ui/nav/nav_engine.cpp
+    src/ui/nav/nav_values.cpp
+    src/ui/nav/nav_mouse.cpp
+    src/ui/shell/shell.cpp
+    src/ui/models/credits.cpp
+    src/ui/prompts/prompts.cpp
+    src/ui/prompts/photo_guide.cpp
+    src/ui/keyboard/keyboard.cpp
+    src/ui/sound/synth.cpp
+    src/ui/sound/game_queue.cpp
+    src/ui/ui_gradient.cpp
+    "${UI_SHADER_DIR}/ui_tokens.h")
+target_include_directories(ui_tests PRIVATE "${CMAKE_SOURCE_DIR}/src" "${UI_SHADER_DIR}")
+target_compile_definitions(ui_tests PRIVATE OOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_features(ui_tests PRIVATE cxx_std_20)
+if (MSVC)
+    target_compile_options(ui_tests PRIVATE /W4 /WX)
+else()
+    target_compile_options(ui_tests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_custom_target(ui_tests_run ALL
+    COMMAND ui_tests
+    DEPENDS ui_tests
+    COMMENT "Running the interface's tests"
+    VERBATIM)
+add_dependencies(OoTRecompiled ui_tests_run)
+
+# THE NAVIGATION CHECK (the menus plan, phase 94; .scaffold/menus/security/build-ci.md section 4):
+# every interface document laid out by the real RmlUi with the real fonts and a renderer that
+# draws nothing, at every window size and interface size, its navigation compared with an oracle
+# that shares no code with the engine. Run before the game links; a difference fails the build.
+add_executable(ui_navcheck
+    src/ui/navcheck/navcheck_main.cpp
+    src/ui/nav/nav_engine.cpp
+    src/ui/nav/nav_oracle.cpp
+    src/ui/nav/nav_rml.cpp
+    src/ui/models/rows_model.cpp
+    src/ui/models/shell_model.cpp
+    src/ui/ui_fonts.cpp)
+target_include_directories(ui_navcheck PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_features(ui_navcheck PRIVATE cxx_std_20)
+target_compile_definitions(ui_navcheck PRIVATE OOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}" NOMINMAX)
+target_link_libraries(ui_navcheck PRIVATE RmlUi::Core Freetype::Freetype)
+if (MSVC)
+    target_compile_options(ui_navcheck PRIVATE /W4 /WX)
+else()
+    target_compile_options(ui_navcheck PRIVATE -Wall -Wextra -Werror)
+endif()
+add_custom_target(ui_navcheck_run ALL
+    COMMAND ui_navcheck
+    DEPENDS ui_navcheck
+    COMMENT "Checking the interface's navigation"
+    VERBATIM)
+add_dependencies(OoTRecompiled ui_navcheck_run)
+
 # The documents, the stylesheets and any fonts we are entitled to ship. Copied rather than compiled
 # in, so a stylesheet can be edited and the result seen by restarting rather than rebuilding, which
 # is the difference between tuning a palette in an evening and tuning it over a week.
@@ -477,6 +626,19 @@ add_custom_command(TARGET OoTRecompiled POST_BUILD
         "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxcompiler.dll"
         $<TARGET_FILE_DIR:OoTRecompiled>
 )
+
+# THE NAMES GATE (the user, 2026-10-13: "I definitely don't want to have any of the copyrighted
+# stuff on the actual produced files that people are downloading"): the program, its DLLs and its
+# assets, as they sit beside each other, carry none of the game's protected names. The setup file
+# and the uninstaller are checked where the payload is packed.
+add_custom_command(TARGET OoTRecompiled POST_BUILD
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_names.py"
+        "$<TARGET_FILE:OoTRecompiled>"
+        "$<TARGET_FILE_DIR:OoTRecompiled>/SDL2.dll"
+        "$<TARGET_FILE_DIR:OoTRecompiled>/dxil.dll"
+        "$<TARGET_FILE_DIR:OoTRecompiled>/dxcompiler.dll"
+        "$<TARGET_FILE_DIR:OoTRecompiled>/assets"
+    VERBATIM)
 
 # Warnings are errors for OUR code and only ours. RecompiledFuncs and src/rsp are machine generated
 # and are added later with this deliberately relaxed, per .scaffold/stack.md.
@@ -546,6 +708,9 @@ if (OOT_PAYLOAD)
     # target rather than on its file keeps this correct when the game is rebuilt.
     add_custom_command(
         OUTPUT "${PAYLOAD_ZIP}"
+        # Nothing is packed that carries a protected name (the names gate, above).
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_names.py"
+                "$<TARGET_FILE:OoTRecompiled>" "$<TARGET_FILE:OoTUninstall>" "${CMAKE_SOURCE_DIR}/assets"
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass
                 -File "${CMAKE_SOURCE_DIR}/tools/make_payload.ps1"
                 -Out "${PAYLOAD_ZIP}"
@@ -559,7 +724,7 @@ if (OOT_PAYLOAD)
         VERBATIM)
     add_custom_target(OoTPayload DEPENDS "${PAYLOAD_ZIP}")
 
-    set(ICON_PATH "${CMAKE_SOURCE_DIR}/assets/icon/mark.ico")
+    set(ICON_PATH "${CMAKE_SOURCE_DIR}/assets/icon/app.ico")
     set(PAYLOAD_PATH "${PAYLOAD_ZIP}")
     configure_file(
         "${CMAKE_SOURCE_DIR}/src/setup/setup.rc.in"
@@ -579,6 +744,8 @@ if (OOT_PAYLOAD)
         # where files go or what the uninstall entry says.
         src/main/places.cpp
         src/main/install.cpp
+        # The tokens it draws in (phase 115), generated from assets/ui/tokens.rcss.
+        "${UI_SHADER_DIR}/ui_tokens.h"
         "${CMAKE_BINARY_DIR}/generated/setup.rc")
     add_dependencies(OoTRecompiledSetup OoTPayload)
 
@@ -597,4 +764,8 @@ if (OOT_PAYLOAD)
     # The entry point stays `main`.
     target_link_options(OoTRecompiledSetup PRIVATE
         -Xlinker /SUBSYSTEM:WINDOWS -Xlinker /ENTRY:mainCRTStartup)
+    # The setup file's own words too (its payload is checked before it is packed).
+    add_custom_command(TARGET OoTRecompiledSetup POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/check_names.py" "$<TARGET_FILE:OoTRecompiledSetup>"
+        VERBATIM)
 endif()

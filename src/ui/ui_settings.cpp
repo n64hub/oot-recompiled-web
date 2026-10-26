@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <atomic>
 #include <chrono>
@@ -296,6 +297,27 @@ namespace {
         { "hudright",      "From the right",  { "0%", "1%", "2%", "3%", "4%", "5%", "6%", "8%", "10%", "15%", "20%", "25%" }, 12 },
         { "hudtop",        "From the top",    { "0%", "1%", "2%", "3%", "4%", "5%", "6%", "8%", "10%", "15%", "20%", "25%" }, 12 },
         { "hudbottom",     "From the bottom", { "0%", "1%", "2%", "3%", "4%", "5%", "6%", "8%", "10%", "15%", "20%", "25%" }, 12 },
+        // The menu's sounds (the menus plan, phase 111), shown under Volume; the volume row only
+        // while the sounds are On.
+        { "menusounds",    "Menu sounds",     { "Off", "On" },                                    2 },
+        { "menusoundvolume", "Menu sound volume", { "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%" }, 10 },
+        // The scale of every menu (the menus plan, phase 113), shown under Menu placement.
+        { "interfacesize", "Interface size",  { "Automatic", "75%", "90%", "100%", "115%", "130%", "150%" }, 7 },
+        // Temporary, on the Debugging page (ui_settings.h says why).
+        { "resizerefresh", "Refresh after a resize", { "Off", "On" },                            2 },
+        { "scalereload",   "Restyle on a size change", { "Off", "On" },                          2 },
+        { "smoothscroll",  "Smooth list scrolling", { "Off", "On" },                             2 },
+        // One more box under the HUD's Comes back for, shown beside the pause menu's.
+        { "hudwakemap",    "The map shown or hidden",        { "Off", "On" },                    2 },
+        // The targeting arrows (ui_settings.h), under the HUD menu's Targeting divider.
+        { "hudreticle",    "Lock-on arrows",  { "Shown", "Hidden" },                              2 },
+        { "hudmarker",     "Target marker",   { "Shown", "Hidden" },                              2 },
+        // Photo mode's own HUD (ui_settings.h), on the Photo page under Photo mode.
+        { "photohud",      "HUD in photo mode", { "Shown", "Dimmed", "Hidden" },                  3 },
+        { "photohuddim",   "Dimmed to",       { "20%", "35%", "50%", "65%", "80%" },              5 },
+        // The size a screenshot or a photo mode picture is taken at (ui_settings.h), on the Photo page
+        // under Screenshots show. The same choices as Video size, and the same meaning (capture_size.h).
+        { "screenshotsize", "Screenshot size", { "Match the window", "720p", "1080p", "1440p", "4K" }, 5 },
     };
 
     // WHAT A CHOICE MEANS, shown under its row (the user, 2026-10-09: "it should have a description
@@ -319,13 +341,14 @@ namespace {
             "Only the game's picture: none of this program's menus, toasts or the corner plate are in the video, "
             "whatever is open while it records.",
             "Everything in the window: the game with every menu, toast and plate over it, so using photo mode or "
-            "the settings can be recorded. Video size still sets the video's size, the window scaled to it.",
+            "the menus can be recorded, all drawn again at Video size rather than the window stretched to it.",
         } },
         { "screenshotshows", {
-            "Only the game's picture, at the window's size: none of this program's menus, toasts or plate, and "
-            "the whole picture even while the settings panel is open, so in photo mode a shot can be taken at "
-            "each setting with the menu still up.",
-            "Everything in the window, exactly as you see it: the game with every menu, toast and plate over it.",
+            "Only the game's picture, at Screenshot size: none of this program's menus, toasts or plate, and the "
+            "whole picture even while the menu is open, so in photo mode a shot can be taken at each setting with "
+            "the menu still up.",
+            "Everything in the window as you see it, the game with every menu, toast and plate over it, drawn again "
+            "at Screenshot size rather than the window stretched to it.",
         } },
         { "hud", {
             "The console's own place: the HUD stays within the middle 4:3 of a wider picture.",
@@ -339,23 +362,40 @@ namespace {
         { "hudfade", {
             "The HUD is always the game's own.",
             "The HUD fades once nothing has needed it for the idle delay, and comes back for what is ticked under "
-            "Comes back for. The HUD button (Controls) brings it back at once.",
-            "The HUD stays faded. The HUD button (Controls) shows it, and again fades it.",
-            "The HUD button (Controls) fades it and brings it back.",
+            "Comes back for. The HUD control ({bind:hud_toggle}) brings it back at once.",
+            "The HUD stays faded, and the hearts come back while your health is low when Hearts at low health is "
+            "ticked. The HUD control ({bind:hud_toggle}) shows it, and again fades it.",
+            "The HUD control ({bind:hud_toggle}) fades it and brings it back.",
+        } },
+        { "hudreticle", {
+            "The arrows that close in and spin around what Z locks on to, enemy or not, as the game draws them.",
+            "No arrows around what Z locks on to. Targeting works exactly as before; only the arrows are not drawn.",
+        } },
+        { "hudmarker", {
+            "The small arrow that floats over what Z would lock on to, in the color the game gives what it is.",
+            "No arrow over what Z would lock on to. Targeting works exactly as before; only the marker is not drawn.",
         } },
         { "microphone", {
             "No microphone: the video has the game's sound alone, if Video sound records it.",
-            "Your voice from the microphone below, mixed with the game's sound. It is listened to only while a "
-            "video records, and goes only into that video.",
+            "Your voice from the microphone below, mixed with the game's sound when Video sound records it. It is "
+            "listened to only while a video records, and goes only into that video.",
+        } },
+        { "photohud", {
+            "Photo mode starts with the game's HUD shown in full. The Photo HUD control ({bind:photo_hud}) dims "
+            "it, then hides it, then shows it again.",
+            "Photo mode starts with the game's HUD dimmed to the share below. The Photo HUD control "
+            "({bind:photo_hud}) hides it, then shows it, then dims it again.",
+            "Photo mode starts with the game's HUD hidden, for a clean picture. The Photo HUD control "
+            "({bind:photo_hud}) shows it, then dims it, then hides it again.",
         } },
         { "photomode", {
-            "Turn this on to freeze the game with the Photo mode control (F10, or the key or button you bind) and "
-            "frame a picture.",
-            "In play, the Photo mode control (F10, or the key or button you bind) freezes the game where it stands "
-            "and pauses its sound; press it again to carry on. While frozen, every setting you change shows on the "
-            "same frame, and the camera moves with the Photo mode section of the controls screen: by default the "
-            "stick moves it, the right stick turns it, the shoulders raise and lower it, the D-pad brings it closer "
-            "or further, B puts it back, and H or the top face button hides and shows the game's HUD.",
+            "Turn this on to freeze the game with the Photo mode control ({bind:photo_mode}) and frame a picture.",
+            "In play, the Photo mode control ({bind:photo_mode}) freezes the game where it stands and pauses its "
+            "sound; press it again to carry on. While frozen, every setting you change shows on the same frame. The "
+            "camera moves with its controls, under Photo mode in Controls; {bind:photo_reset} puts it back, "
+            "{bind:photo_hud} shows, dims and hides the game's HUD (it starts as HUD in photo mode says), and "
+            "{bind:photo_shot} takes a picture, with Screenshots on or off. A row along the bottom shows each control "
+            "as it is bound, and {bind:photo_guide} hides it.",
         } },
     };
 
@@ -589,7 +629,13 @@ namespace oot::ui {
                hud_wake_items == other.hud_wake_items && hud_wake_pause == other.hud_wake_pause &&
                hud_wake_any == other.hud_wake_any &&
                hud_left == other.hud_left && hud_right == other.hud_right &&
-               hud_top == other.hud_top && hud_bottom == other.hud_bottom;
+               hud_top == other.hud_top && hud_bottom == other.hud_bottom &&
+               menu_sounds == other.menu_sounds && menu_sound_volume == other.menu_sound_volume &&
+               interface_size == other.interface_size && resize_refresh == other.resize_refresh &&
+               scale_reload == other.scale_reload && smooth_scroll == other.smooth_scroll &&
+               hud_wake_map == other.hud_wake_map && hud_reticle == other.hud_reticle &&
+               hud_marker == other.hud_marker && photo_hud == other.photo_hud && photo_hud_dim == other.photo_hud_dim &&
+               screenshot_size == other.screenshot_size;
     }
 
     int row_count() {
@@ -765,6 +811,18 @@ namespace oot::ui {
             case 68: return s.hud_right;
             case 69: return s.hud_top;
             case 70: return s.hud_bottom;
+            case 71: return s.menu_sounds;
+            case 72: return s.menu_sound_volume;
+            case 73: return s.interface_size;
+            case 74: return s.resize_refresh;
+            case 75: return s.scale_reload;
+            case 76: return s.smooth_scroll;
+            case 77: return s.hud_wake_map;
+            case 78: return s.hud_reticle;
+            case 79: return s.hud_marker;
+            case 80: return s.photo_hud;
+            case 81: return s.photo_hud_dim;
+            case 82: return s.screenshot_size;
             default: return 0;
         }
     }
@@ -843,6 +901,18 @@ namespace oot::ui {
             case 68: s.hud_right = value; break;
             case 69: s.hud_top = value; break;
             case 70: s.hud_bottom = value; break;
+            case 71: s.menu_sounds = value; break;
+            case 72: s.menu_sound_volume = value; break;
+            case 73: s.interface_size = value; break;
+            case 74: s.resize_refresh = value; break;
+            case 75: s.scale_reload = value; break;
+            case 76: s.smooth_scroll = value; break;
+            case 77: s.hud_wake_map = value; break;
+            case 78: s.hud_reticle = value; break;
+            case 79: s.hud_marker = value; break;
+            case 80: s.photo_hud = value; break;
+            case 81: s.photo_hud_dim = value; break;
+            case 82: s.screenshot_size = value; break;
             default: break;
         }
     }
@@ -896,6 +966,51 @@ namespace oot::ui {
         for (int row = 53; row < ROW_COUNT; ++row) {
             set_row_unclamped(s, row, clamp_int(get_row(s, row), 0, option_count(row) - 1));
         }
+    }
+
+    namespace {
+        // The Interface size row's steps after Automatic, in its order.
+        constexpr float INTERFACE_STEPS[] = { 0.75f, 0.9f, 1.0f, 1.15f, 1.3f, 1.5f };
+        constexpr int INTERFACE_STEP_COUNT = static_cast<int>(sizeof(INTERFACE_STEPS) / sizeof(INTERFACE_STEPS[0]));
+    }
+
+    float interface_scale(int index, int window_width, int window_height, int display_width, int display_height) {
+        // The row's step, Automatic the screen's own, exactly as the launcher takes it (the user,
+        // 2026-10-13: "especially within the game docked mode, the UI and the text is all way too
+        // big"): Automatic used to follow the game's window, so a 1080 line window drew the game's
+        // menu at 150% beside a launcher at 100% on the same screen.
+        const float wanted = launcher_scale(index, display_width, display_height);
+        // What the window holds: the largest step at which the menus' 960 by 720 fit in it, never
+        // below the smallest. A step, not the exact ratio, so a window being dragged to a new size
+        // reflows the menus a few times rather than every frame.
+        const float room = std::min(static_cast<float>(window_width) / 960.0f, static_cast<float>(window_height) / 720.0f);
+        float holds = INTERFACE_STEPS[0];
+        for (float step : INTERFACE_STEPS) {
+            if (step <= room + 0.001f) {
+                holds = step;
+            }
+        }
+        return std::min(wanted, holds);
+    }
+
+    float launcher_scale(int index, int display_width, int display_height) {
+        if (index >= 1 && index <= INTERFACE_STEP_COUNT) {
+            return INTERFACE_STEPS[index - 1];
+        }
+        // The screen's share of 1920 by 1080, the narrower way, and the step nearest it.
+        const float share = std::min(static_cast<float>(display_width) / 1920.0f,
+                                     static_cast<float>(display_height) / 1080.0f);
+        float nearest = 1.0f;
+        for (float step : INTERFACE_STEPS) {
+            if (std::fabs(step - share) < std::fabs(nearest - share)) {
+                nearest = step;
+            }
+        }
+        return nearest;
+    }
+
+    float smallest_interface_scale() {
+        return INTERFACE_STEPS[0];
     }
 
     bool update_choice_made() {

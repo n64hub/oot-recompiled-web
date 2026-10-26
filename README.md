@@ -15,7 +15,7 @@ NTSC-U 1.0), picked in the launcher and kept in the browser. It needs WebGPU (Ch
 and up on Windows). The page is built from this branch and published with N64Recomp-browser's `tools/publish_page.sh`,
 so it can be a commit or two behind.
 
-A static recompilation of The Legend of Zelda: Ocarina of Time (NTSC-U 1.0) into a native Windows
+A static recompilation of a Nintendo 64 game's NTSC-U 1.0 release into a native Windows
 executable.
 
 Author: `Jonathan Barnes`

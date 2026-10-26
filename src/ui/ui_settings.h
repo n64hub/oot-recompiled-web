@@ -235,16 +235,74 @@ namespace oot::ui {
         int hud_wake_items = 1;
         int hud_wake_pause = 1;
         int hud_wake_any = 0;
+        // The map shown or hidden (the user, 2026-10-13: "I can hear the sound of the map showing and
+        // hiding, but it actually never actually unhides or undims the HUD itself"), its own box.
+        int hud_wake_map = 1;
+        // THE TARGETING ARROWS, each its own row (the user, 2026-10-13: "we don't have a dedicated
+        // option for Z targets ... the little arrows that spin around an enemy ... It could be an NPC
+        // of any kind"): 0 shown, 1 hidden. The lock-on arrows close in and spin around what Z holds;
+        // the marker floats over whatever can be targeted. Neither fades with the HUD.
+        int hud_reticle = 0;
+        int hud_marker = 0;
+        // PHOTO MODE'S OWN HUD (the user, 2026-10-13: "What if the user wants the hud faded in photo mode? ...
+        // separate control for photo mode hud", then "Own setting, 3 states"): the state the game's HUD
+        // starts in when photo mode freezes the game, 0 shown, 1 dimmed, 2 hidden (the Photo HUD control
+        // then steps through the three), and how far Dimmed takes it, 20 to 80 percent by step. The in-game
+        // HUD's fading has no say in photo mode.
+        int photo_hud = 0;
+        int photo_hud_dim = 2;
+        // THE SCREENSHOT'S SIZE (the user, 2026-10-14: screenshots and photo mode "at any given resolution,
+        // even if the user screen is ... capped at like 1080p"): Video size's choices (main/capture_size.h),
+        // for the Screenshot control's pictures and photo mode's. 0 is the window's own size.
+        int screenshot_size = 0;
         // WHERE THE HUD SITS, CUSTOM (2026-10-09, game/hud.h, the HUD menu): each corner's distance
         // from the frame's left, right, top and bottom edges, as a share of the frame, by step.
         int hud_left = 4;
         int hud_right = 4;
         int hud_top = 4;
         int hud_bottom = 6;
+        // THE MENU'S SOUNDS (the menus plan, phase 111, src/ui/sound/): 0 off, 1 on; and their
+        // volume by step, 0 being 10% and 9 the full volume, 2 (30%) the default (the user,
+        // 2026-10-13: "update the default menu sound volume to be 30% rather than 70"). Scaled by
+        // the program's Volume too.
+        int menu_sounds = 1;
+        int menu_sound_volume = 2;
+        // THE INTERFACE SIZE (the menus plan, phase 113): 0 Automatic, then 75%, 90%, 100%, 115%,
+        // 130% and 150%, the scale every menu is drawn at (RmlUi's density independent pixel
+        // ratio) and the launcher's window with it. Automatic follows the window: see
+        // interface_scale below.
+        int interface_size = 0;
+        // TEMPORARY DEBUGGING TOGGLES (the user, 2026-10-13: "changing window size makes all options
+        // disappear until i begin moving around the menu again"), one per candidate, on the
+        // Debugging page until the cause is confirmed (the standing rule: every candidate fix its
+        // own toggle). Each 0 off, 1 on; the likeliest fix and the behavior as it stands are On.
+        //   resize_refresh: after a window size or interface size change, the page is refreshed and
+        //                   its focus put back in view, as a move does (the candidate fix)
+        //   scale_reload:   a change of interface size applies every stylesheet again (phase 113)
+        //   smooth_scroll:  lists scroll smoothly to the focus (phase 114)
+        int resize_refresh = 1;
+        int scale_reload = 1;
+        int smooth_scroll = 1;
 
         bool operator==(const Settings& other) const;
         bool operator!=(const Settings& other) const { return !(*this == other); }
     };
+
+    // THE INTERFACE SIZE's scale. Automatic follows the SCREEN, in the game as in the launcher
+    // (2026-10-13; in the game it used to follow the window, 150% at 1080 lines, which the user
+    // found "way too big ... Everything starts to overlap"). In the game the step is also a
+    // CEILING: the menus are drawn at it when the window holds 960 by 720 at that scale, and at
+    // the largest scale that does when it does not (150% in a 960 by 720 window left the page
+    // eighteen pixels of room). Automatic follows the SCREEN (the user, 2026-10-13: "the automatic should
+    // kind of default to something that works well with their screen size. So if their screen size
+    // is smaller than 1920 by 1080 ... a smaller size"): the step nearest the screen's share of
+    // 1920 by 1080, so a 1080p screen is 100% (the size the user called "a really good size"), a
+    // 1366 by 768 laptop 75%, a 1440p monitor 130%, 4K 150%. A chosen step is that step, smaller
+    // ones included; the launcher's window is made to fit it.
+    float interface_scale(int index, int window_width, int window_height, int display_width, int display_height);
+    float launcher_scale(int index, int display_width, int display_height);
+    // The smallest step, the floor any fitting may bring a scale down to.
+    float smallest_interface_scale();
 
     // How many choices each index has, and what to show for the current one.
     int option_count(int row);

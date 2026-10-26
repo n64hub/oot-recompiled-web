@@ -140,7 +140,7 @@ namespace {
                 // THREE SHAPES, because a person unzips a pack however their tool unzips it and
                 // none of them is wrong. The folder itself may hold the database; or it may hold
                 // ONE folder that holds it, which is what his own pack does (the zip contains
-                // `THE LEGEND OF ZELDA\rt64.json` under the version named folder); or it is not a
+                // `rt64.json` in a folder named for the ROM's header, under the version named folder); or it is not a
                 // pack at all and is passed over in silence rather than reported as an error,
                 // because a person's folder is theirs and may hold anything.
                 if (holds_database(p)) {

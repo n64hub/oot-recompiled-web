@@ -129,7 +129,7 @@ namespace oot::game_state {
     uint32_t warps_taken();
 
     // The transition type the warps use, as the game numbers them: its own fade to black
-    // unless --transition asked for another. How the wipe, the circle and the triforce are
+    // unless --transition asked for another. How the wipe, the circle and the triangles are
     // reached on demand (post-parity phase 43).
     void set_warp_transition(int32_t type);
     int32_t warp_transition();

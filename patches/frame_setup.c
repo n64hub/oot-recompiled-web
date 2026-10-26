@@ -187,20 +187,20 @@ RECOMP_PATCH void Graph_Update(GraphicsContext* gfxCtx, GameState* gameState) {
     if (THGA_IsCrash(&gfxCtx->polyOpa)) {
         problem = true;
         PRINTF("%c", BEL);
-        PRINTF(VT_COL(RED, WHITE) T("ゼルダ0は死んでしまった(graph_alloc is empty)\n",
-                                    "Zelda 0 is dead (graph_alloc is empty)\n") VT_RST);
+        PRINTF(VT_COL(RED, WHITE) T("graph 0 is dead (graph_alloc is empty)\n",
+                                    "graph 0 is dead (graph_alloc is empty)\n") VT_RST);
     }
     if (THGA_IsCrash(&gfxCtx->polyXlu)) {
         problem = true;
         PRINTF("%c", BEL);
-        PRINTF(VT_COL(RED, WHITE) T("ゼルダ1は死んでしまった(graph_alloc is empty)\n",
-                                    "Zelda 1 is dead (graph_alloc is empty)\n") VT_RST);
+        PRINTF(VT_COL(RED, WHITE) T("graph 1 is dead (graph_alloc is empty)\n",
+                                    "graph 1 is dead (graph_alloc is empty)\n") VT_RST);
     }
     if (THGA_IsCrash(&gfxCtx->overlay)) {
         problem = true;
         PRINTF("%c", BEL);
-        PRINTF(VT_COL(RED, WHITE) T("ゼルダ4は死んでしまった(graph_alloc is empty)\n",
-                                    "Zelda 4 is dead (graph_alloc is empty)\n") VT_RST);
+        PRINTF(VT_COL(RED, WHITE) T("graph 4 is dead (graph_alloc is empty)\n",
+                                    "graph 4 is dead (graph_alloc is empty)\n") VT_RST);
     }
 
     if (!problem) {

@@ -42,6 +42,8 @@ namespace oot::screenshots {
         constexpr int FULL_WIDTH = 16384;
 
         std::atomic<bool> g_requested{ false };
+        // The request came from photo mode's own control, which the Screenshots row does not gate.
+        std::atomic<bool> g_requested_in_photo{ false };
         Phase g_phase = Phase::Idle;
         int g_frames = 0;
         std::filesystem::path g_folder;
@@ -76,17 +78,15 @@ namespace oot::screenshots {
         // Ask for the next presented frame; false while another snapshot is still waiting.
         bool take(const char* suffix) {
             g_pending = g_folder / (g_stem + suffix);
-            // The game alone or the whole window, as the Screenshots show row says (2026-10-09).
-            return oot::recorder::snapshot(g_pending, FULL_WIDTH, oot::ui::screenshots_game_alone());
+            // The game alone or the whole window, as the Screenshots show row says (2026-10-09), both
+            // drawn again at Screenshot size (2026-10-14, ui_render.cpp). No raw copy beside it: that
+            // is for the interface's thumbnails, and a full frame's is many megabytes nobody reads.
+            using Shot = oot::recorder::Shot;
+            return oot::recorder::snapshot(g_pending, FULL_WIDTH,
+                                           oot::ui::screenshots_game_alone() ? Shot::Game : Shot::WindowAtSize, false);
         }
 
-        // The snapshot writes a raw copy beside the PNG for the interface's thumbnails (recorder.cpp);
-        // a full frame's is many megabytes nobody reads. Gone, as the sweep does.
         void taken() {
-            std::error_code ec;
-            std::filesystem::path raw = g_pending;
-            raw.replace_extension(".rgba");
-            std::filesystem::remove(raw, ec);
             std::fprintf(stderr, "[screenshot] %s\n", g_pending.string().c_str());
         }
 
@@ -112,6 +112,11 @@ namespace oot::screenshots {
         g_requested.store(true, std::memory_order_release);
     }
 
+    void request_in_photo_mode() {
+        g_requested_in_photo.store(true, std::memory_order_relaxed);
+        g_requested.store(true, std::memory_order_release);
+    }
+
     bool busy() {
         return g_phase != Phase::Idle;
     }
@@ -121,7 +126,8 @@ namespace oot::screenshots {
             if (!g_requested.exchange(false, std::memory_order_acq_rel)) {
                 return;
             }
-            if (!oot::ui::screenshots_enabled()) {
+            const bool from_photo_mode = g_requested_in_photo.exchange(false, std::memory_order_relaxed);
+            if (!from_photo_mode && !oot::ui::screenshots_enabled()) {
                 std::fprintf(stderr, "[screenshot] ignored: the Screenshots row is Off\n");
                 return;
             }

@@ -18,7 +18,7 @@
                         <div class="title">Debug</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <!-- Where in the nesting you are: empty at the top, then the region, then the

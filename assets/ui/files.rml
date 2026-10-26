@@ -16,9 +16,9 @@
                     <div class="title">Your files</div>
                 </div>
                 <div class="chrome">
-                    <div class="win-btn" id="win-min"><div class="glyph-min"></div></div>
-                    <div class="win-btn" id="win-max"><div class="glyph-max"></div></div>
-                    <div class="win-btn" id="win-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                    <div class="win-btn" id="win-min"><svg class="win-ic" src="../icons/minus.svg"/></div>
+                    <div class="win-btn" id="win-max"><svg class="win-ic" src="../icons/square.svg"/></div>
+                    <div class="win-btn" id="win-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                 </div>
             </div>
 
@@ -49,14 +49,14 @@
                 <div class="row" id="frow-11"><span class="label" id="flabel-11"></span><span class="value" id="fvalue-11"></span><span class="open" id="fopen-11">Open</span></div>
             </div>
 
-            <!-- Two states in one bar. At rest it is Close and Remove everything; once Remove has
+            <!-- Two states in one bar. At rest it is Close and Uninstall; once Uninstall has
                  been pressed the question in the foot changes and so do these, so a destructive
                  action is never one click away and never needs a second window. Both buttons
                  take the focus (the pad and the keyboard walk the rows and then the bar), and
                  both show it and the pointer over them. -->
             <div class="actions">
                 <div class="act-btn act-quit" id="files-left" tabindex="auto"><span class="act-label" id="files-left-label">Close</span></div>
-                <div class="act-btn act-danger" id="files-right" tabindex="auto"><span class="act-label" id="files-right-label">Remove everything</span></div>
+                <div class="act-btn act-danger" id="files-right" tabindex="auto"><span class="act-label" id="files-right-label">Uninstall</span></div>
             </div>
 
             <div class="foot">

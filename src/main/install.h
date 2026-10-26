@@ -55,16 +55,17 @@ namespace oot::install {
     // goes stale. Both must produce the same entry, so both name the same file.
     void register_for(const std::filesystem::path& game);
 
-    // Remove the shortcuts and the uninstall entry. Does NOT touch any file the user owns; see
-    // remove_everything for that.
+    // Remove the shortcuts and the uninstall entry. Does NOT touch any file; see remove_program.
     void unregister_self();
 
-    // The full removal, which is what the uninstall entry and the launcher's own button both run.
-    // Deletes the data folder and everything under it EXCEPT any ROM found there, which is moved
-    // to the user's Downloads folder first and reported, because a ROM is the one file in this
-    // project that must never be destroyed by this program.
+    // The uninstall, which is what the uninstall entry and the Files page's button both run. It
+    // removes the program and nothing of the person's (the user, 2026-10-14: "only deleting the
+    // things that this game actually provides off the bat and retaining anything that was put
+    // there by someone else"): the shortcuts, the entry, the program's folder, and any newer copy
+    // of the program it downloaded. Saves and moments, the ROM, texture packs, mods, settings and
+    // controls all stay where they are, so a later install picks up where this one left off.
     // Returns a line describing what happened, for the surface that asked.
-    std::string remove_everything();
+    std::string remove_program();
 
     // Where the shortcuts are, whether or not they are there. For the surface that tells a person
     // where their files live.

@@ -6,7 +6,7 @@
 // each calculation, each setting that could cause it, and after each it screen captures a snap
 // of to see what changes and logs the screenshot and the setting each time in sequence").
 //
-// Started from the Lighting menu's Sweep row. It walks every option of every lighting row, the
+// Started from the Sweep row on the Debugging page. It walks every option of every lighting row, the
 // Inspect views and the Experiment variants included, one step per option: the option is put
 // to the renderer alone (the file is not touched), the picture is given time for the history
 // to settle, one full frame is captured, and the next step follows. At the end the person's

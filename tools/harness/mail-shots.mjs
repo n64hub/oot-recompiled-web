@@ -15,7 +15,8 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const read = (p) => JSON.parse(readFileSync(p, "utf8").replace(/^﻿/, ""));
 const rs = read(join(homedir(), ".config", "resend-personal", "credentials.json"));
@@ -24,12 +25,8 @@ const TO = process.argv.includes("--to")
   ? process.argv[process.argv.indexOf("--to") + 1]
   : "hello@jonbarnes.dev";
 const FROM = '"OoT: Recompiled | Jonathan Barnes" <hello@jonbarnes.dev>';
-const SHOTS = join(
-  "C:",
-  "Users", "jon", "Nextcloud", "development", "internal", "games",
-  "Legend of Zelda, The - Ocarina of Time (USA)",
-  "build-cmake", "harness", "showcase",
-);
+// The project's own build folder, wherever the project is.
+const SHOTS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "build-cmake", "harness", "showcase");
 
 /** What each set is, in the words that say why it was chosen. */
 const WHY = {

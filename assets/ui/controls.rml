@@ -18,7 +18,7 @@
                         <div class="title">Controls</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <div class="hint">Up and down to move, left and right to pick a slot, Enter binds, Delete clears, Escape closes</div>
@@ -34,9 +34,9 @@
                  and empty the rest of the time, which the stylesheet takes as hidden. -->
             <div class="notice" id="controls-notice"></div>
 
-            <div class="foot">
+            <div class="foot keep">
                 <span id="controls-note">Keyboard</span>
-                <span id="controls-foot">Saved as you change it. F3 closes this</span>
+                <span class="hide-in-shell" id="controls-foot">Saved as you change it. F3 closes this</span>
             </div>
 
         </div>

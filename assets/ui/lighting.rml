@@ -17,7 +17,7 @@
                         <div class="title">Lighting</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <div class="hint">Every change shows at once. Up and down to move, left and right to change, Escape or the pad's B goes back</div>
@@ -26,11 +26,11 @@
             <!-- Built from the lighting model (ui_lighting.cpp), the way the settings rows are: one
                  row per control, each with an Off where off makes sense and a scale of levels, and
                  a Reset row at the end that puts the design's values back. -->
-            <div class="rows long" id="lighting-rows"></div>
+            <div class="rows long" id="lighting-rows" data-model="rows"></div>
 
             <div class="foot">
                 <span>Saved as you change it</span>
-                <span id="lighting-foot">Each part switches on its own; Inspect shows one pass instead of the picture</span>
+                <span id="lighting-foot">Each part switches on its own; the tools for inspecting a single pass are under Debugging</span>
             </div>
 
         </div>

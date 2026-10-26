@@ -131,7 +131,7 @@ namespace oot::probe {
                      "dl_mean_us dl_max_us dl_over screen_mean_us screen_max_us screen_over "
                      "submit_mean_us submit_max_us submit_over "
                      "present_mean_us present_max_us present_over presents "
-                     "ui_mean_us ui_max_us ui_over\n");
+                     "ui_mean_us ui_max_us ui_over level\n");
         g_on.store(true, std::memory_order_release);
         return true;
     }
@@ -257,7 +257,7 @@ namespace oot::probe {
 
         std::fprintf(g_file,
                      "%llu %u %u %d %u %llu %lld %llu %llu %u %u %u %.4f "
-                     "%llu %llu %u %llu %llu %u %llu %llu %u %llu %llu %u %u %llu %llu %u\n",
+                     "%llu %llu %u %llu %llu %u %llu %llu %u %llu %llu %u %u %llu %llu %u %.1f\n",
                      static_cast<unsigned long long>(g_line.fetch_add(1, std::memory_order_relaxed)),
                      vis,
                      opened,
@@ -286,7 +286,10 @@ namespace oot::probe {
                      span_n[3],
                      static_cast<unsigned long long>(span_mean[4]),
                      static_cast<unsigned long long>(span_max[4]),
-                     span_over[4]);
+                     span_over[4],
+                     // The mean magnitude of the samples this line, so a run can read how loud the
+                     // sound was (the music held at a fifth while a menu holds the game, phase 98).
+                     (samples == 0) ? 0.0 : static_cast<double>(abs_sum) / static_cast<double>(samples));
     }
 
     void close() {

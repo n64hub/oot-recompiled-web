@@ -1,5 +1,78 @@
 [
   {
+    "version": "0.6.1",
+    "date": "2026-10-22",
+    "title": "The bow, the longshot and Dark Link",
+    "summary": "Fixes for what 0.6.0 got wrong: the bow and the longshot failing in places full of scenery, Dark Link never appearing, timers running out behind the menu, and photo mode acting on the game behind it.",
+    "sections": {
+      "changed": [
+        "Changed the buttons that turn the menu's dial to sit at its top corners, above the medallions, instead of first along the foot."
+      ],
+      "fixed": [
+        "Fixed the bow drawing no arrow and the hookshot and longshot leaving Link unable to move, in places full of scenery such as Hyrule Field with a far Render distance and Shadow casters at Everything. The game now has far more room for everything it makes as you play.",
+        "Fixed Dark Link never appearing in the Water Temple while shadows are traced, which kept the temple from being finished. He appears again once you look away, as in the original game, and Impa leaves the castle courtyard the same way.",
+        "Fixed the timers in hot rooms, under water and during escapes running out while the menu or photo mode had the game paused, so Link died the moment the menu closed.",
+        "Fixed the moon on the title screen moving on for a few seconds after the menu paused the game.",
+        "Fixed a possible crash when the menu was open as a new place or the title screen began.",
+        "Fixed photo mode's buttons acting on the game behind it, finishing or skipping text and turning the minimap on or off, and photo mode starting under the open menu.",
+        "Fixed a controller that Windows sees twice, such as through Steam Input or DS4Windows, opening and closing the menu on one press and moving two rows at a time.",
+        "Fixed the music coming back a little off its level after the menu closed.",
+        "Fixed a click on the menu's empty space hiding the page behind its frame."
+      ]
+    }
+  },
+  {
+    "version": "0.6.0",
+    "date": "2026-10-15",
+    "title": "One menu for the launcher and the game",
+    "summary": "The launcher and the in-game menu are now one menu in the website's look, which pauses the game while it is open and is as easy to drive with a controller as with the keyboard and mouse. This release also carries the fixes for the Sun's Song, beams of light and the free camera.",
+    "sections": {
+      "added": [
+        "Added one menu for the launcher and the game: a dial of sections (Play before the game, then Settings, Graphics, Gameplay, HUD, Controls, Capture, Moments and About, with Debugging in the game), drawn in the website's colors, typefaces and icons. In the game it sits over the picture or docks to its left or right, by the Menu placement row.",
+        "Added a pause while the menu is open: the game holds where it stands, the picture keeps drawing so a change shows on it at once, and the music plays on at a fifth of its volume. A Paused badge says so.",
+        "Added full controller and keyboard control of every menu: a direction moves to whatever is that way on screen, a held direction repeats, and the pointer focuses what it rests on.",
+        "Added button prompts along the foot of the menu, drawn for the device you last used (an Xbox, PlayStation or Nintendo style controller, or the keyboard) and showing the bindings in force.",
+        "Added an on-screen keyboard, so a ROM's path can be typed with a controller.",
+        "Added menu sounds: the program's own in the launcher and the game's own in the game, with a Menu sounds switch and a Menu sound volume row (30% at first).",
+        "Added an Interface size row: Automatic, or 75% to 150%, for every menu and the launcher's window with them.",
+        "Added a splash while the program starts, which fills as it loads, after which the launcher opens maximized.",
+        "Added credits to About, naming every typeface and icon set the program bundles but did not draw, and its license.",
+        "Added a Screenshot size row with the same choices as Video size (Match the window, 720p, 1080p, 1440p, 4K), whatever the size of your window or screen. With the whole window chosen, pictures and videos draw the menus again at that size instead of stretching the window.",
+        "Added a HUD in photo mode row (Shown, Dimmed or Hidden, with Dimmed to) and a button guide along the bottom of photo mode, read from your own bindings. Taking the picture has a control of its own, and every photo control has a controller default that never takes a button already in use.",
+        "Added Mark as reserved to Moments: twenty slots of their own that neither quick save nor the autosave ever writes over. Each moment is now named for the place it was taken.",
+        "Added HUD rows for the targeting arrows (Lock-on arrows and Target marker), and The map shown or hidden under Comes back for.",
+        "Added Controls opening on the device you are using, and keeping to it while it is open."
+      ],
+      "changed": [
+        "Changed the settings into sections of their own: Settings, Graphics (with Lighting) and Gameplay, and Capture with its Photo and Video pages. HUD, Controls and Moments each have their own place on the dial.",
+        "Changed uninstalling to remove only the program. Your saves, moments, ROM, texture packs, mods, settings and controls stay where they are.",
+        "Changed every setting's description to say what the setting does now, naming the keys and buttons bound to it.",
+        "Changed the installer and the window's own title bar to the new look."
+      ],
+      "fixed": [
+        "Fixed the Sun's Song never finishing in Hyrule Field at a far Render distance: its column of light did not appear, time crept forward slowly and Link was left standing in the song's pose. The rings of shrubs and rocks and the groups of trees now leave room for everything else the game places.",
+        "Fixed beams of light casting shadows onto themselves and blocking the light around them, such as the rays through the Temple of Time's side windows and the beams in story scenes. A beam of light now casts no shadow.",
+        "Fixed the beam of light in the Temple of Time's sword room being hidden while ray traced lighting was on.",
+        "Fixed the free camera jumping upward to look over a rock, a crate or a step it met. It now comes straight in toward Link at the same angle and eases back out once clear.",
+        "Fixed the Moments buttons ignoring a click on their words.",
+        "Fixed loading one of the four older autosaves, which did nothing.",
+        "Fixed a moment's picture showing blank, or a slot that had been saved over still showing its old picture.",
+        "Fixed the Hearts at low health choice being hidden when the HUD fades Always, although it applied there."
+      ]
+    }
+  },
+  {
+    "version": "0.5.1",
+    "date": "2026-10-11",
+    "title": "Text boxes finish at every text speed",
+    "sections": {
+      "fixed": [
+        "Fixed text boxes stalling at any Text speed but Original: a box showed all its text but never finished, so A did nothing, shop shelves could not be browsed, and yes or no choices such as a warp song's waited until B was pressed.",
+        "Fixed a faster Text speed passing over a box's pause for a button press or its prompt to play a song."
+      ]
+    }
+  },
+  {
     "version": "0.5.0",
     "date": "2026-10-09",
     "title": "Photo mode, video recording and a HUD of your own",

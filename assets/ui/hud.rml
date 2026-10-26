@@ -17,7 +17,7 @@
                         <div class="title">HUD</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <div class="hint">Up and down to move, left and right to change, Escape or the pad's B goes back</div>
@@ -27,7 +27,7 @@
                  in use ... dim at all times, or hide/dim hud on mapped key or button"). The rows are
                  the settings table's, picked out by key (is_hud_setting in ui_shell.cpp), each shown
                  only while it applies; src/game/hud.h has the rest. -->
-            <div class="rows long" id="hud-rows"></div>
+            <div class="rows long" id="hud-rows" data-model="rows"></div>
 
             <div class="foot">
                 <span>Saved as you change it</span>

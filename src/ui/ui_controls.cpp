@@ -2,6 +2,7 @@
 
 #include "main/input.h"
 #include "ui/ui_settings.h"
+#include "ui/input/ui_input.h"
 
 // For the right stick's axis numbers, which is all this needs of SDL.
 #include <SDL_gamecontroller.h>
@@ -138,14 +139,37 @@ namespace oot::ui::controls {
             }
         }
         g_device = 0;
+        bool kept = keep.empty();
         if (!keep.empty()) {
             for (size_t i = 0; i < g_devices.size(); ++i) {
                 if (g_devices[i].guid == keep) {
                     g_device = static_cast<int>(i);
+                    kept = true;
                 }
             }
         }
         rebuild_rows();
+        // The selected pad is gone: the device in use, if it is still here, else the keyboard.
+        if (!kept) {
+            select_in_use(oot::ui::input::last_pad_instance());
+        }
+    }
+
+    void select_in_use(int pad_instance) {
+        int chosen = 0;
+        if (pad_instance >= 0) {
+            for (size_t i = 1; i < g_devices.size(); ++i) {
+                devices::UiPad pad;
+                if (devices::ui_pad(g_devices[i].pad_slot, pad) && pad.instance == pad_instance) {
+                    chosen = static_cast<int>(i);
+                    break;
+                }
+            }
+        }
+        if (chosen != g_device) {
+            g_device = chosen;
+            rebuild_rows();
+        }
     }
 
     int device_count() {

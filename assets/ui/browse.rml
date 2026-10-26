@@ -17,9 +17,9 @@
                     <div class="title">Choose your ROM</div>
                 </div>
                 <div class="chrome">
-                    <div class="win-btn" id="win-min"><div class="glyph-min"></div></div>
-                    <div class="win-btn" id="win-max"><div class="glyph-max"></div></div>
-                    <div class="win-btn" id="win-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                    <div class="win-btn" id="win-min"><svg class="win-ic" src="../icons/minus.svg"/></div>
+                    <div class="win-btn" id="win-max"><svg class="win-ic" src="../icons/square.svg"/></div>
+                    <div class="win-btn" id="win-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                 </div>
             </div>
 

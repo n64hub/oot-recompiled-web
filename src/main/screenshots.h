@@ -9,13 +9,15 @@
 // lighting and ambience off. and screencap one more before re-enabled all user's settings and
 // releasing the freeze. this is used for making before and after shots").
 //
-// THE SCREENSHOT is the next presented frame at the window's size, as a PNG, through the recorder's
-// snapshot (main/recorder.h), into the captures folder under the day, beside the recordings:
+// THE SCREENSHOT is the next presented frame, as a PNG, through the recorder's snapshot
+// (main/recorder.h), into the captures folder under the day, beside the recordings:
 // `HH-MM-SS-oot-screenshot.png`. Only while the Screenshots row is On; the Screenshot binding
 // (Controls, F12 by default) asks for it. The Screenshots show row (2026-10-09, the user, of photo
 // mode: "We need the same thing" as Video shows) says what it holds: the game alone (the default;
 // the picture drawn again without this program's interface, and whole even with the settings panel
-// open), or the whole window, our own interface included, exactly what is on the screen.
+// open), or the whole window, our own interface included, as it is on the screen. Either way it is
+// drawn again at Screenshot size (2026-10-14, main/capture_size.h), however small the window, and
+// written off the render thread, so the picture never stalls for it.
 //
 // THE COMPARISON, while the Debugging menu's Comparison shots row is also On, in place of the one
 // shot:
@@ -39,8 +41,13 @@
 // with a line in the log.
 namespace oot::screenshots {
 
-    // The Screenshot binding was pressed. Safe from any thread; the work happens in tick.
+    // The Screenshot binding was pressed. Safe from any thread; the work happens in tick. It is taken
+    // only while the Screenshots row is On.
     void request();
+
+    // PHOTO MODE'S OWN PICTURE (its Take a picture control, 2026-10-13): taken whatever the Screenshots
+    // row says, since photo mode being on is the asking. Screenshots show still decides what is in it.
+    void request_in_photo_mode();
 
     // One presented frame has gone by. Cheap when nothing is under way.
     void tick();

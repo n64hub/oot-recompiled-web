@@ -254,7 +254,7 @@ namespace oot::install {
         RegDeleteKeyW(HKEY_CURRENT_USER, UNINSTALL_KEY);
     }
 
-    std::string remove_everything() {
+    std::string remove_program() {
         unregister_self();
 
         const std::filesystem::path data = oot::places::data();
@@ -262,46 +262,23 @@ namespace oot::install {
             return "Nothing to remove: this copy runs portable, so it never installed anything.";
         }
 
-        // THE ROM COMES OUT FIRST. If the person accepted the offer to keep a copy here, it is
-        // still their file and a ROM is the one thing this program must never destroy. It moves
-        // to their Downloads folder and the message says so, rather than being deleted quietly
-        // along with everything else.
-        std::string rescued;
+        // WHAT GOES IS WHAT THE PROGRAM BROUGHT, and it is told by place rather than listed. The
+        // program's folder holds only what setup unpacked and what the program made for itself;
+        // the updates folder holds only newer copies of the program. Everything of the person's
+        // lives beside them in the data folder (places.h), and none of it is touched: it used to
+        // be, when this deleted the whole data folder and moved the ROM to Downloads to save it.
         std::error_code ec;
-        const std::filesystem::path roms = oot::places::roms();
-        if (std::filesystem::is_directory(roms, ec)) {
-            std::filesystem::path downloads = known_folder(FOLDERID_Downloads);
-            if (downloads.empty()) {
-                downloads = known_folder(FOLDERID_Profile);
-            }
-            for (const std::filesystem::directory_entry& entry :
-                 std::filesystem::directory_iterator(roms, ec)) {
-                if (!entry.is_regular_file(ec)) {
-                    continue;
-                }
-                const std::filesystem::path moved = downloads / entry.path().filename();
-                std::filesystem::rename(entry.path(), moved, ec);
-                if (ec) {
-                    // A different volume refuses a rename. Copy, and only then remove.
-                    ec.clear();
-                    std::filesystem::copy_file(entry.path(), moved,
-                                               std::filesystem::copy_options::overwrite_existing, ec);
-                    if (!ec) {
-                        std::filesystem::remove(entry.path(), ec);
-                    }
-                }
-                if (!ec) {
-                    rescued = moved.string();
-                }
-            }
+        std::vector<std::filesystem::path> folders{ oot::places::program() };
+        if (std::filesystem::is_directory(oot::places::updates(), ec)) {
+            folders.push_back(oot::places::updates());
         }
 
         // THE REST HAS TO HAPPEN FROM OUTSIDE THE FOLDER. A running program cannot delete its own
         // executable on Windows, nor the DLLs it has loaded, nor the log it holds open, so the
-        // first version of this deleted assets\ and stopped with bin\ and every user folder still
-        // there and no error that said why. So: a copy of the small finisher goes to the
-        // temporary directory, is started with this process id and this folder, waits for this
-        // program to exit, and takes the folder away.
+        // first version of this deleted assets\ and stopped with bin\ still there and no error
+        // that said why. So: a copy of the small finisher goes to the temporary directory, is
+        // started with this process id and the folders, waits for this program to exit, and takes
+        // them away.
         ec.clear();
         const std::filesystem::path finisher = oot::places::program() / FINISHER;
         wchar_t temp_dir[MAX_PATH] = {};
@@ -316,8 +293,10 @@ namespace oot::install {
                    + ec.message();
         }
 
-        std::wstring command = L"\"" + aside.wstring() + L"\" " +
-                               std::to_wstring(GetCurrentProcessId()) + L" \"" + data.wstring() + L"\"";
+        std::wstring command = L"\"" + aside.wstring() + L"\" " + std::to_wstring(GetCurrentProcessId());
+        for (const std::filesystem::path& folder : folders) {
+            command += L" \"" + folder.wstring() + L"\"";
+        }
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
@@ -330,11 +309,8 @@ namespace oot::install {
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
 
-        std::string message = "Removing " + data.string() + ". This will close now.";
-        if (!rescued.empty()) {
-            message += " Your copy of the game was moved to " + rescued + " rather than deleted.";
-        }
-        return message;
+        return "Removing " + oot::places::program().string() + ". This will close now. Your saves, ROM, packs, "
+               "mods and settings stay in " + data.string() + ".";
     }
 
 } // namespace oot::install

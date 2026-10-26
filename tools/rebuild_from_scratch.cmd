@@ -103,7 +103,8 @@ if errorlevel 1 (echo BUILD FAILED & exit /b 1)
 echo BUILD_OK
 
 echo === the rom has to be put back beside the new binary ===
-copy /y "Legend of Zelda, The - Ocarina of Time (USA).z64" "build-cmake\" >nul
+rem Whatever the ROM is called: the one .z64 in the project root (the program checks its hash).
+for %%f in (*.z64) do copy /y "%%f" "build-cmake\" >nul
 if errorlevel 1 (echo ROM COPY FAILED & exit /b 1)
 echo ROM_OK
 

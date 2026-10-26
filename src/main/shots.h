@@ -53,6 +53,14 @@ namespace oot::shots {
     void set_photo(bool on);
     bool photo();
 
+    // AND BY THE MENU (the menus plan, phase 97; the user, 2026-10-12: an open menu holds the game
+    // "the same way as photo mode"): the same freeze while a menu is open in the game, its own flag
+    // so photo mode and the menu each let go of their own. The sound is NOT paused for it
+    // (patches/photo_audio.c asks about photo mode only), so the music plays on, at the level
+    // patches/menu_music.c sets while this is on.
+    void set_menu_hold(bool on);
+    bool menu_hold();
+
     // Called once per game update from the patched Play_Main with the entrance the game is in
     // and whether the scene is READY: its room loaded and every object it asked for loaded.
     // Ready is reported on the trace with the update it happened on, because the runtime loads

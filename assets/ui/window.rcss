@@ -17,7 +17,7 @@
 	height: 100%;
 	max-height: 100%;
 	border-radius: 0;
-	border-color: var(--accent);
+	border-color: var(--color-lime);
 }
 
 /* The game window's frame (frame.rml): the same brass edge around the window, and the header
@@ -30,7 +30,7 @@
 	top: 0;
 	width: 100%;
 	height: 100%;
-	border: var(--rule) var(--accent);
+	border: var(--rule) var(--color-lime);
 	box-sizing: border-box;
 }
 
@@ -42,12 +42,12 @@
 	width: 100%;
 	height: var(--chrome-bar);
 	box-sizing: border-box;
-	padding: 0 var(--pad-row-side);
+	padding: 0 var(--space-3);
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	decorator: gradient(vertical var(--case-top) var(--case-bottom));
-	border-bottom: var(--rule) var(--accent);
+	decorator: vertical-gradient(var(--color-slate-raised) var(--color-slate));
+	border-bottom: var(--rule) var(--color-lime);
 }
 
 /* A title bar's proportions: the title in the caption size, the mark smaller than the launcher's
@@ -62,31 +62,15 @@
  * size as the now in-game window bar". */
 .frame-bar .title
 {
-	font-size: var(--size-caption);
+	font-size: var(--size-label);
 }
 
 .frame-bar .mark
 {
 	width: var(--mark-small-w);
 	height: var(--mark-small-h);
-	margin-right: var(--pad-row);
+	margin-right: var(--space-2);
 }
-
-/* THE GLYPHS ARE THE SAME SIZE IN BOTH BARS. Only the button they sit in is smaller here, so the
- * bar over the picture stays slim.
- *
- * They used to be shrunk too, to --glyph-small (8dp against 10dp), and the close glyph came out
- * BROKEN rather than small: it is two one-pixel bars rotated forty five degrees about their own
- * centers, and at eight device pixels the two land on different fractional pixels and stop
- * meeting, so the cross renders as a slash with a stub beside it. The user saw it straight away
- * ("this close button in the game window bar doesn't look correct like the launcher") and a
- * magnified capture of the two bars side by side shows it plainly: clean cross above, broken one
- * below. The minimize and maximize glyphs survived the shrink because a horizontal rule and a
- * square border have no diagonal to round.
- *
- * So the fix is not to nudge the rotated bars into alignment at one particular size, which would
- * break again at the next one. Ten device pixels is what the launcher already draws correctly and
- * it fits comfortably inside the smaller 22dp button. One glyph size, used twice. */
 
 .frame-edge.hidden,
 .frame-bar.hidden
@@ -104,89 +88,42 @@
 {
 	width: var(--win-btn);
 	height: var(--win-btn);
-	margin-left: var(--gap);
+	margin-left: var(--rule);
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	font-family: var(--font-display);
 	font-size: var(--size-heading);
-	color: var(--text-dim);
-	border-radius: var(--radius-tight);
-	transition: background-color var(--duration-fast) linear-in-out,
-	            color var(--duration-fast) linear-in-out;
+	color: var(--color-dim);
+	border-radius: var(--radius);
+	transition: background-color var(--duration-fast) var(--ease),
+	            color var(--duration-fast) var(--ease);
 }
 
 .win-btn:hover
 {
-	color: var(--text);
-	background-color: var(--row-on);
+	color: var(--color-ink);
+	background-color: var(--color-accent-wash);
 }
 
-/* The minimize glyph: a short bar, drawn rather than typed. */
-.glyph-min
+/* THE BUTTONS' ICONS ARE THE LAUNCHER'S OWN: minus, square and x from icons/ (Lucide, in the
+ * licenses manifest), one rule for both bars; shell.rml links this sheet for it. They used to be
+ * drawn here from one-pixel boxes, and a stroke that thin has nowhere safe to land below 100%. As
+ * filled boxes, RmlUi rounded the minimize bar and the cross to no pixels at all in the game bar
+ * ("the app is missing minimize and close icons but only while its in the smaller dropdown
+ * titlebar not in the laucnher"); as borders, the cross's two rotated bars rasterized differently
+ * from each other, one arm thick and whole, the other thin and broken ("looks distorted now").
+ * Nudging the bars into line at one size breaks at the next. An icon is drawn smooth at whatever
+ * size its box comes out, the same in both directions. The button around it stays the bar's slim
+ * --win-btn, so the window's hit test (main/launch.cpp) is unchanged. */
+.win-ic
 {
-	width: var(--glyph-w);
-	height: var(--rule);
-	background-color: var(--text-dim);
+	width: var(--space-4);
+	height: var(--space-4);
+	image-color: var(--color-dim);
 }
 
-.win-btn:hover .glyph-min
+.win-btn:hover .win-ic
 {
-	background-color: var(--text);
-}
-
-/* The maximize glyph: a square, drawn from a border. */
-.glyph-max
-{
-	width: var(--glyph-w);
-	height: var(--glyph-w);
-	border: var(--rule) var(--text-dim);
-	box-sizing: border-box;
-}
-
-.win-btn:hover .glyph-max
-{
-	border-color: var(--text);
-}
-
-/* The close glyph: two bars crossed, drawn rather than typed (a typed character was dropped by
- * the parser, and an icon is drawn in any case). */
-.glyph-x
-{
-	position: relative;
-	width: var(--glyph-w);
-	height: var(--glyph-w);
-}
-
-.glyph-x .bar
-{
-	position: absolute;
-	left: 0;
-	/* HALF A PIXEL MATTERS HERE. `top: 50%` puts a one pixel bar's TOP at the box's center, so
-	 * its own center, which is what it rotates about, sits half a pixel below the box's. The two
-	 * bars then rasterize differently from each other depending on where the box lands on screen:
-	 * clean in the launcher's bar, lopsided in the game's, with one arm longer than the other and
-	 * the crossing off center. Offsetting by half the bar's thickness puts the rotation center on
-	 * the box's center, where both directions round the same way. The number is (--glyph-w minus
-	 * --rule) / 2, done by hand in tokens.rcss because RCSS has no arithmetic; change either of
-	 * those two and --glyph-bar-top has to be redone with them. */
-	top: var(--glyph-bar-top);
-	width: var(--glyph-w);
-	height: var(--rule);
-	background-color: var(--text-dim);
-}
-
-.glyph-x .bar.a
-{
-	transform: rotate(45deg);
-}
-
-.glyph-x .bar.b
-{
-	transform: rotate(-45deg);
-}
-
-.win-btn:hover .glyph-x .bar
-{
-	background-color: var(--text);
+	image-color: var(--color-ink);
 }

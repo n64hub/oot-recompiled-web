@@ -8,11 +8,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -520,113 +522,289 @@ namespace oot::recorder {
                      g_folder.string().c_str());
     }
 
-    // The one off thumbnail (phase 75). A path waiting means the next frame is wanted.
+    // The one off snapshot (phase 75). Asked for: the next frame is wanted. Writing: a frame was
+    // taken and its PNG is being made on the writer, off the render thread. One at a time.
     std::mutex g_snapshot_mutex;
     std::filesystem::path g_snapshot_path;
     int g_snapshot_width = 0;
+    bool g_snapshot_raw = true;
     std::atomic<bool> g_snapshot_pending{ false };
-    std::atomic<bool> g_snapshot_game_alone{ false };
+    std::atomic<Shot> g_snapshot_what{ Shot::Window };
+    std::atomic<bool> g_snapshot_writing{ false };
+    // Held rather than detached, for the reason g_finisher is: shutdown joins it.
+    std::thread g_snapshot_writer;
 
-    bool snapshot(const std::filesystem::path& png, int width, bool game_alone) {
-        if (g_snapshot_pending.load(std::memory_order_acquire)) {
+    bool snapshot(const std::filesystem::path& png, int width, Shot what, bool raw) {
+        if (g_snapshot_pending.load(std::memory_order_acquire) || g_snapshot_writing.load(std::memory_order_acquire)) {
             return false;
         }
         {
             std::lock_guard<std::mutex> lock(g_snapshot_mutex);
             g_snapshot_path = png;
             g_snapshot_width = width > 0 ? width : 320;
+            g_snapshot_raw = raw;
         }
-        g_snapshot_game_alone.store(game_alone, std::memory_order_relaxed);
+        g_snapshot_what.store(what, std::memory_order_relaxed);
         g_snapshot_pending.store(true, std::memory_order_release);
         return true;
     }
 
-    bool snapshot_wants_game_alone() {
-        return g_snapshot_pending.load(std::memory_order_acquire) && g_snapshot_game_alone.load(std::memory_order_relaxed);
+    bool snapshot_wants(Shot what) {
+        return g_snapshot_pending.load(std::memory_order_acquire) && g_snapshot_what.load(std::memory_order_relaxed) == what;
     }
 
     bool snapshot_pending() {
-        return g_snapshot_pending.load(std::memory_order_acquire);
+        return g_snapshot_pending.load(std::memory_order_acquire) || g_snapshot_writing.load(std::memory_order_acquire);
     }
 
-    // Scale by dropping pixels (nearest), convert to RGB, encode, write. Render thread.
-    void take_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch) {
-        std::filesystem::path path;
-        int out_w = 0;
+    // WHOLE OR NOT AT ALL (2026-10-13): a picture is written under a temporary name and renamed
+    // into place, so nothing ever reads one half written. The Moments list could: a moment's row
+    // built while its picture was still being written failed to load it, and the interface keeps a
+    // failed load for the rest of the session, so that row stayed blank until the program restarted.
+    namespace {
+    bool write_whole(const std::filesystem::path& target, const char* bytes, size_t size) {
+        const std::filesystem::path temp = target.string() + ".writing";
         {
-            std::lock_guard<std::mutex> lock(g_snapshot_mutex);
-            path = g_snapshot_path;
-            out_w = g_snapshot_width;
+            std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                return false;
+            }
+            out.write(bytes, static_cast<std::streamsize>(size));
+            if (!out.good()) {
+                return false;
+            }
         }
-        if (out_w > width) {
-            out_w = width;
+        std::error_code ec;
+        std::filesystem::rename(temp, target, ec);
+        if (ec) {
+            std::filesystem::remove(target, ec);
+            std::filesystem::rename(temp, target, ec);
         }
-        const int out_h = (height * out_w) / width;
-        if (out_w <= 0 || out_h <= 0) {
-            return;
+        return !ec;
+    }
+
+    // The raw picture the interface draws: "RGBA", width, height, then the pixels, opaque.
+    bool write_raw(const std::filesystem::path& raw, const uint8_t* pixels, int channels, int w, int h) {
+        std::vector<char> bytes(12 + static_cast<size_t>(w) * h * 4);
+        const uint32_t dims[2] = { static_cast<uint32_t>(w), static_cast<uint32_t>(h) };
+        std::memcpy(bytes.data(), "RGBA", 4);
+        std::memcpy(bytes.data() + 4, dims, sizeof(dims));
+        char* out = bytes.data() + 12;
+        for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+            out[i * 4 + 0] = static_cast<char>(pixels[i * channels + 0]);
+            out[i * 4 + 1] = static_cast<char>(pixels[i * channels + 1]);
+            out[i * 4 + 2] = static_cast<char>(pixels[i * channels + 2]);
+            out[i * 4 + 3] = static_cast<char>(0xFF);
         }
+        return write_whole(raw, bytes.data(), bytes.size());
+    }
+    } // namespace
+
+    bool raw_from_png(const std::filesystem::path& png) {
+        std::ifstream in(png, std::ios::binary);
+        if (!in) {
+            return false;
+        }
+        const std::vector<uint8_t> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        static const uint8_t SIGNATURE[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+        if (file.size() < 8 + 25 || std::memcmp(file.data(), SIGNATURE, 8) != 0) {
+            return false;
+        }
+        const auto be32 = [&](size_t at) {
+            return (uint32_t(file[at]) << 24) | (uint32_t(file[at + 1]) << 16) | (uint32_t(file[at + 2]) << 8) | uint32_t(file[at + 3]);
+        };
+        uint32_t w = 0;
+        uint32_t h = 0;
+        int channels = 0;
+        std::vector<uint8_t> packed;
+        for (size_t at = 8; at + 12 <= file.size();) {
+            const uint32_t length = be32(at);
+            if (length > file.size() - at - 12) {
+                return false;
+            }
+            const char* type = reinterpret_cast<const char*>(&file[at + 4]);
+            const uint8_t* data = &file[at + 8];
+            if (std::memcmp(type, "IHDR", 4) == 0) {
+                if (length != 13) {
+                    return false;
+                }
+                w = be32(at + 8);
+                h = be32(at + 12);
+                // 8 bits a channel, RGB (2) or RGBA (6), deflate, the standard filters, not interlaced.
+                if (data[8] != 8 || (data[9] != 2 && data[9] != 6) || data[10] != 0 || data[11] != 0 || data[12] != 0) {
+                    return false;
+                }
+                channels = data[9] == 6 ? 4 : 3;
+            }
+            else if (std::memcmp(type, "IDAT", 4) == 0) {
+                packed.insert(packed.end(), data, data + length);
+            }
+            else if (std::memcmp(type, "IEND", 4) == 0) {
+                break;
+            }
+            at += 12 + length;
+        }
+        // The loader's own bounds (ui_render.cpp): nothing larger is ever drawn.
+        if (channels == 0 || w == 0 || h == 0 || w > 1024 || h > 1024 || packed.empty()) {
+            return false;
+        }
+        size_t length = 0;
+        void* inflated = tinfl_decompress_mem_to_heap(packed.data(), packed.size(), &length, TINFL_FLAG_PARSE_ZLIB_HEADER);
+        const size_t stride = static_cast<size_t>(w) * channels;
+        if (inflated == nullptr || length != (stride + 1) * h) {
+            mz_free(inflated);
+            return false;
+        }
+        // Each row is a filter byte and the row; undone in place against the row above.
+        const uint8_t* rows = static_cast<const uint8_t*>(inflated);
+        std::vector<uint8_t> pixels(stride * h);
+        for (uint32_t y = 0; y < h; ++y) {
+            const uint8_t filter = rows[y * (stride + 1)];
+            const uint8_t* src = rows + y * (stride + 1) + 1;
+            uint8_t* out = pixels.data() + y * stride;
+            const uint8_t* up = (y > 0) ? out - stride : nullptr;
+            for (size_t x = 0; x < stride; ++x) {
+                const int a = (x >= static_cast<size_t>(channels)) ? out[x - channels] : 0;
+                const int b = up ? up[x] : 0;
+                const int c = (up && x >= static_cast<size_t>(channels)) ? up[x - channels] : 0;
+                int add = 0;
+                switch (filter) {
+                    case 0: add = 0; break;
+                    case 1: add = a; break;
+                    case 2: add = b; break;
+                    case 3: add = (a + b) / 2; break;
+                    case 4: {
+                        const int p = a + b - c;
+                        const int pa = std::abs(p - a);
+                        const int pb = std::abs(p - b);
+                        const int pc = std::abs(p - c);
+                        add = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+                        break;
+                    }
+                    default:
+                        mz_free(inflated);
+                        return false;
+                }
+                out[x] = static_cast<uint8_t>(src[x] + add);
+            }
+        }
+        mz_free(inflated);
+        std::filesystem::path raw = png;
+        raw.replace_extension(".rgba");
+        return write_raw(raw, pixels.data(), channels, static_cast<int>(w), static_cast<int>(h));
+    }
+
+    namespace {
+    // Scale by dropping pixels (nearest) to at most out_w across, and convert to RGB.
+    std::vector<uint8_t> to_rgb(const uint8_t* bgra, int width, int height, std::size_t pitch, int out_w, int out_h) {
         std::vector<uint8_t> rgb(static_cast<size_t>(out_w) * out_h * 3);
         for (int y = 0; y < out_h; ++y) {
-            const int sy = (y * height) / out_h;
+            const int sy = static_cast<int>((static_cast<int64_t>(y) * height) / out_h);
             const uint8_t* row = bgra + static_cast<size_t>(sy) * pitch;
             uint8_t* dst = rgb.data() + static_cast<size_t>(y) * out_w * 3;
             for (int x = 0; x < out_w; ++x) {
-                const uint8_t* px = row + static_cast<size_t>((x * width) / out_w) * 4;
+                const uint8_t* px = row + static_cast<size_t>((static_cast<int64_t>(x) * width) / out_w) * 4;
                 dst[0] = px[2];
                 dst[1] = px[1];
                 dst[2] = px[0];
                 dst += 3;
             }
         }
+        return rgb;
+    }
+
+    // Encode and write: the writer's whole job once it has the pixels.
+    void write_snapshot(const std::filesystem::path& path, const std::vector<uint8_t>& rgb, int out_w, int out_h, bool raw) {
         size_t length = 0;
         void* png = tdefl_write_image_to_png_file_in_memory_ex(rgb.data(), out_w, out_h, 3, &length, 6, MZ_FALSE);
         if (png == nullptr || length == 0) {
-            say("the thumbnail could not be encoded");
+            say("the snapshot could not be encoded");
             return;
         }
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out.write(static_cast<const char*>(png), static_cast<std::streamsize>(length));
+        const bool png_written = write_whole(path, static_cast<const char*>(png), length);
         mz_free(png);
-        if (!out.good()) {
-            say("the thumbnail could not be written");
+        if (!png_written) {
+            say("the snapshot could not be written");
         }
 
         // AND THE SAME PICTURE RAW, beside the PNG, for the interface: its texture loader draws no
         // bitmap format (ui_render.cpp, LoadTexture), and a PNG decoder is a dependency this project
         // does not take for a 320 pixel thumbnail. The raw file is ours: "RGBA", width, height, the
-        // pixels; the PNG stays for people.
-        std::filesystem::path raw = path;
-        raw.replace_extension(".rgba");
-        std::ofstream rawout(raw, std::ios::binary | std::ios::trunc);
-        const char magic[4] = { 'R', 'G', 'B', 'A' };
-        const uint32_t dims[2] = { static_cast<uint32_t>(out_w), static_cast<uint32_t>(out_h) };
-        rawout.write(magic, 4);
-        rawout.write(reinterpret_cast<const char*>(dims), sizeof(dims));
-        std::vector<uint8_t> rgba(static_cast<size_t>(out_w) * out_h * 4);
-        for (size_t i = 0; i < static_cast<size_t>(out_w) * out_h; ++i) {
-            rgba[i * 4 + 0] = rgb[i * 3 + 0];
-            rgba[i * 4 + 1] = rgb[i * 3 + 1];
-            rgba[i * 4 + 2] = rgb[i * 3 + 2];
-            rgba[i * 4 + 3] = 255;
+        // pixels; the PNG stays for people. Only when asked: a screenshot's would be many megabytes
+        // nobody reads.
+        if (raw) {
+            std::filesystem::path raw_path = path;
+            raw_path.replace_extension(".rgba");
+            write_raw(raw_path, rgb.data(), 3, out_w, out_h);
         }
-        rawout.write(reinterpret_cast<const char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()));
     }
+    } // namespace
 
-    // The swap chain is wanted for a recording, or for a snapshot of the whole window; a
-    // snapshot of the game alone is taken through the picture hook instead.
-    bool wants_frame() {
-        return g_state.load(std::memory_order_relaxed) == State::Recording ||
-               (g_snapshot_pending.load(std::memory_order_acquire) && !g_snapshot_game_alone.load(std::memory_order_relaxed));
-    }
-
-    void submit_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch) {
-        if (bgra == nullptr || width <= 0 || height <= 0 || !g_snapshot_pending.load(std::memory_order_acquire)) {
+    // The taken frame to the writer, which makes and writes the PNG off the render thread. With
+    // `done`, the pixels are read there too and `done` hands the buffer back; without it the caller's
+    // buffer is gone when this returns, so they are scaled and converted here first.
+    void take_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch, std::function<void()> done) {
+        std::filesystem::path path;
+        int out_w = 0;
+        bool raw = true;
+        {
+            std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+            path = g_snapshot_path;
+            out_w = g_snapshot_width;
+            raw = g_snapshot_raw;
+        }
+        if (out_w > width) {
+            out_w = width;
+        }
+        const int out_h = static_cast<int>((static_cast<int64_t>(height) * out_w) / width);
+        if (out_w <= 0 || out_h <= 0) {
+            g_snapshot_pending.store(false, std::memory_order_release);
+            if (done) {
+                done();
+            }
             return;
         }
-        take_snapshot(bgra, width, height, pitch);
+
+        // The writer before this one finished before it cleared the writing flag that let this
+        // snapshot be asked for, so this join does not wait on anything but its return.
+        if (g_snapshot_writer.joinable()) {
+            g_snapshot_writer.join();
+        }
+        g_snapshot_writing.store(true, std::memory_order_release);
         g_snapshot_pending.store(false, std::memory_order_release);
+        if (done) {
+            g_snapshot_writer = std::thread([=] {
+                const std::vector<uint8_t> rgb = to_rgb(bgra, width, height, pitch, out_w, out_h);
+                done();
+                write_snapshot(path, rgb, out_w, out_h, raw);
+                g_snapshot_writing.store(false, std::memory_order_release);
+            });
+        }
+        else {
+            std::vector<uint8_t> rgb = to_rgb(bgra, width, height, pitch, out_w, out_h);
+            g_snapshot_writer = std::thread([path, rgb = std::move(rgb), out_w, out_h, raw] {
+                write_snapshot(path, rgb, out_w, out_h, raw);
+                g_snapshot_writing.store(false, std::memory_order_release);
+            });
+        }
+    }
+
+    // The swap chain is wanted for a recording, or for a snapshot of the window as presented; the
+    // game alone and the window at a size of its own are taken in the renderer's hooks instead.
+    bool wants_frame() {
+        return g_state.load(std::memory_order_relaxed) == State::Recording || snapshot_wants(Shot::Window);
+    }
+
+    void submit_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch, std::function<void()> done) {
+        if (bgra == nullptr || width <= 0 || height <= 0 || !g_snapshot_pending.load(std::memory_order_acquire)) {
+            if (done) {
+                done();
+            }
+            return;
+        }
+        take_snapshot(bgra, width, height, pitch, std::move(done));
     }
 
     bool time_is_up() {
@@ -651,9 +829,8 @@ namespace oot::recorder {
         }
         // The thumbnail first, whether or not a recording runs: it wanted exactly one frame and
         // this is it.
-        if (g_snapshot_pending.load(std::memory_order_acquire) && !g_snapshot_game_alone.load(std::memory_order_relaxed)) {
-            take_snapshot(bgra, width, height, pitch);
-            g_snapshot_pending.store(false, std::memory_order_release);
+        if (snapshot_wants(Shot::Window)) {
+            take_snapshot(bgra, width, height, pitch, nullptr);
         }
         // NO TIME CHECK HERE. See time_is_up in the header: the caller hands over the frame that
         // was already in flight before it asks whether to stop, so a frame that arrives here is
@@ -714,6 +891,10 @@ namespace oot::recorder {
     }
 
     void shutdown() {
+        // A snapshot still being written finishes first, whether or not a recording ever ran.
+        if (g_snapshot_writer.joinable()) {
+            g_snapshot_writer.join();
+        }
         if (!g_threads_running) {
             return;
         }

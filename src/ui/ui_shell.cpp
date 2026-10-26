@@ -1,5 +1,7 @@
 #include "ui/ui_shell.h"
+#include "ui/ui_fonts.h"
 #include "ui/ui_warps.h"
+#include "game/warp_places.h"
 #include "game/game_state.h"
 #include "main/recorder.h"
 #include "main/video.h"
@@ -13,11 +15,24 @@
 #include "ui/ui_settings.h"
 #include "ui/ui_lighting.h"
 #include "ui/ui_system.h"
+#include "ui/models/rows_model.h"
+#include "ui/models/shell_model.h"
+#include "ui/models/credits.h"
+#include "ui/prompts/prompts.h"
+#include "ui/prompts/photo_guide.h"
+#include "ui/keyboard/keyboard.h"
+#include "ui/sound/ui_sound.h"
+#include "ui_tokens.h"
+#include "ui/nav/nav_rml.h"
+#include "ui/shell/shell.h"
+#include "ui/input/ui_input.h"
 
 #include "main/input.h"
 #include "main/launch.h"
+#include "main/photo.h"
 #include "main/places.h"
 #include "main/install.h"
+#include "main/shots.h"
 #include "main/updates.h"
 
 #include <algorithm>
@@ -44,11 +59,14 @@
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Elements/ElementFormControl.h>
+#include <SDL_gamecontroller.h>
+#include <SDL_keyboard.h>
 #include <SDL_scancode.h>
 
 #include "build_info.h"
 
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <json/json.hpp>
 
@@ -81,6 +99,7 @@ namespace {
     // Read from the game's thread every frame, so it is an atomic rather than something the
     // mutex guards: a stale answer for one frame is harmless, a stall on the game thread is not.
     std::atomic<bool> g_capturing{ false };
+    std::atomic<uint32_t> g_capture_releases{ 0 };
 
     // Whether the ROM browser's path field has the focus, read by the pump to route the keys.
     std::atomic<bool> g_text_entry{ false };
@@ -134,7 +153,9 @@ namespace {
     // How much of a path fits on one line beside its label at the case's width. Longer than this
     // and the front is dropped rather than the end, because the end is the part that identifies
     // it. An installed path (`...\AppData\Local\OoT Recompiled\saves`) fits whole.
-    constexpr size_t FILES_PATH_CHARS = 58;
+    // In the shell (phase 96) the page's box is narrower than the launcher's old window, so the
+    // path keeps its last thirty characters, which still name the folder it is.
+    constexpr size_t FILES_PATH_CHARS = 30;
     Rml::ElementDocument* g_browse_doc = nullptr;
     Screen g_screen = Screen::None;
 
@@ -170,6 +191,25 @@ namespace {
     Clock::time_point g_hint_since;
     std::string g_hint_last;   // what it last said, so a changed shortcut shows it again
 
+    // THE SPLASH (the menus plan, phase 99; the user, 2026-10-12: "Loading for a few seconds before
+    // the launher"): shown once, before the launcher, in its window, then fading as the launcher
+    // appears beneath it. Any press or click after its first moments skips the rest of the minimum:
+    // the program has loaded by the time it can be drawn, so the wait is only for the eye.
+    Rml::ElementDocument* g_splash_doc = nullptr;
+    enum class SplashState { Off, Showing, Fading };
+    SplashState g_splash = SplashState::Off;
+    Clock::time_point g_splash_since;
+    bool g_resized = false;   // the window or the interface size changed this frame
+    bool g_splash_poured = false;
+    bool g_splash_skip = false;
+    int g_splash_frames = 0;   // frames drawn while it shows, for the pour (poll_splash)
+    // The splash stays until the pour has filled and a beat after (tokens.rcss, --splash-pour-*).
+    constexpr double SPLASH_MIN_SECONDS = static_cast<double>(oot::ui::tokens::splash_pour_first) +
+                                          oot::ui::tokens::splash_pour_hold + oot::ui::tokens::splash_pour_rest +
+                                          oot::ui::tokens::splash_pour_after;
+    constexpr double SPLASH_SKIP_AFTER_SECONDS = 0.8;
+    constexpr double SPLASH_FADE_SECONDS = 0.6;   // tokens.rcss, --splash-fade
+
     // The controls document.
     int g_cfocus = 0;
     int g_cslot = 0;
@@ -200,6 +240,7 @@ namespace {
     Rml::ElementDocument* g_frame_doc = nullptr;
     // The frame rate counter's plate (2026-09-19), placed against the frame's title bar.
     Rml::ElementDocument* g_counter_doc = nullptr;
+    Rml::ElementDocument* g_guide_doc = nullptr;   // photo mode's button guide (2026-10-13)
     Rml::ElementDocument* g_letterbox_doc = nullptr;
 
     // The frame recorder's plate (2026-09-22): the counter's twin in the opposite corner, and
@@ -217,9 +258,9 @@ namespace {
     // The Moments screen (phase 77): the focused slot (0 the autosave, 1 to 8), whether each
     // slot holds a file, and whether Delete has been pressed once.
     int g_mfocus = 1;
-    // Indexed by slot, which now runs from AUTOSAVE_OLDEST (negative) to SLOT_COUNT, so every
-    // read goes through moment_index() rather than the slot itself.
-    bool g_moment_present[oot::moments::SLOT_COUNT - oot::moments::AUTOSAVE_OLDEST + 1] = {};
+    // Indexed by slot, which runs from AUTOSAVE_OLDEST (negative) to SLOT_COUNT and then the
+    // reserved from 101, so every read goes through moment_index() rather than the slot itself.
+    bool g_moment_present[oot::moments::SLOT_TOTAL] = {};
     bool g_moment_delete_armed = false;
 
     // THE SCREEN HAS TWO ZONES (2026-09-25, the user could not select a moment and load it).
@@ -231,7 +272,9 @@ namespace {
     MomentZone g_mzone = MomentZone::Rows;
     int g_mbutton = 0;   // an index into the buttons the current state offers
 
-    // The rows in the order they are shown: the autosaves newest first, then the player's.
+    // The rows in the order they are shown: the autosaves newest first, the player's, then the
+    // reserved that hold a moment (2026-10-13). Twenty empty reserved rows would be a long walk to
+    // nothing, and a reserved slot is only ever filled by moving a moment into it, never chosen.
     std::vector<int> moment_order() {
         std::vector<int> order;
         for (int slot = oot::moments::AUTOSAVE_SLOT; slot >= oot::moments::AUTOSAVE_OLDEST; --slot) {
@@ -240,11 +283,17 @@ namespace {
         for (int slot = 1; slot <= oot::moments::SLOT_COUNT; ++slot) {
             order.push_back(slot);
         }
+        for (int slot = oot::moments::RESERVED_FIRST; slot <= oot::moments::RESERVED_LAST; ++slot) {
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(oot::moments::slot_file(slot, ".moment"), ec)) {
+                order.push_back(slot);
+            }
+        }
         return order;
     }
 
     int moment_index(int slot) {
-        return slot - oot::moments::AUTOSAVE_OLDEST;
+        return oot::moments::slot_index(slot);
     }
 
     bool moment_present(int slot) {
@@ -273,72 +322,6 @@ namespace {
     // NOTHING IS BUNDLED. A typeface is somebody's work, and shipping one we have not licensed
     // would be exactly the kind of thing the asset rules exist to prevent. Dropping licensed
     // files into assets/fonts is all it takes to use them instead.
-    void load_fonts() {
-        const std::string ours = g_assets_dir + "/fonts/";
-        const std::vector<std::string> preferred = {
-            ours + "display.ttf",
-            ours + "display-bold.ttf",
-            ours + "body.ttf",
-            ours + "body-bold.ttf",
-            ours + "mono.ttf",
-        };
-
-        int loaded = 0;
-        for (const std::string& path : preferred) {
-            if (std::filesystem::exists(path) && Rml::LoadFontFace(path)) {
-                ++loaded;
-            }
-        }
-
-        if (loaded > 0) {
-            std::fprintf(stderr, "[ui] %d of our own font files loaded\n", loaded);
-            return;
-        }
-
-#ifdef __EMSCRIPTEN__
-        // A page has no system faces. It carries RmlUi's own sample faces (Lato and Roboto Mono,
-        // under the SIL Open Font License and the Apache License, their LICENSE.txt beside them,
-        // web/page.cmake), registered under the family names tokens.rcss asks for.
-        struct Face { const char* file; const char* family; Rml::Style::FontWeight weight; };
-        const Face web_faces[] = {
-            { "LatoLatin-Regular.ttf", "Georgia", Rml::Style::FontWeight::Normal },
-            { "LatoLatin-Bold.ttf", "Georgia", Rml::Style::FontWeight::Bold },
-            { "LatoLatin-Regular.ttf", "Segoe UI", Rml::Style::FontWeight::Normal },
-            { "LatoLatin-Bold.ttf", "Segoe UI", Rml::Style::FontWeight::Bold },
-            { "RobotoMono-Regular.ttf", "Consolas", Rml::Style::FontWeight::Normal },
-            { "RobotoMono-Bold.ttf", "Consolas", Rml::Style::FontWeight::Bold },
-        };
-        for (const Face& face : web_faces) {
-            if (Rml::LoadFontFace(g_assets_dir + "/web-fonts/" + face.file, face.family, Rml::Style::FontStyle::Normal,
-                                  face.weight, loaded == 0)) {
-                ++loaded;
-            }
-        }
-#else
-        // The design decision's own fallback stacks name a serif for display and the system face
-        // for reading, so this is the documented second choice rather than an improvisation.
-        const std::vector<std::string> system_faces = {
-            "C:/Windows/Fonts/georgia.ttf",
-            "C:/Windows/Fonts/georgiab.ttf",
-            "C:/Windows/Fonts/segoeui.ttf",
-            "C:/Windows/Fonts/segoeuib.ttf",
-            "C:/Windows/Fonts/consola.ttf",
-        };
-        for (const std::string& path : system_faces) {
-            if (std::filesystem::exists(path) && Rml::LoadFontFace(path)) {
-                ++loaded;
-            }
-        }
-#endif
-
-        if (loaded == 0) {
-            say("no font could be loaded, so the interface will have no text at all");
-        }
-        else {
-            std::fprintf(stderr, "[ui] no bundled faces present, using %d system fallbacks\n", loaded);
-        }
-    }
-
     Rml::ElementDocument* load(const char* name) {
         const std::string path = g_assets_dir + "/ui/" + name;
         if (!std::filesystem::exists(path)) {
@@ -455,10 +438,12 @@ namespace {
     // prefixes. Declared here because the row kinds are defined further down.
     void click_action(const std::string& id);
     void click_step(const std::string& id);
+    void click_pick(const std::string& id);
     void click_files(const std::string& id);
     void click_moments(const std::string& id);
     void reflect_moments();
     void moments_nav(Nav nav);
+    std::string with_bindings(const std::string& note);
     void click_ask(bool yes);
     bool ask_next_question();
     void reflect_files();
@@ -475,12 +460,26 @@ namespace {
     const char* time_label();
     const char* screen_name(Screen screen);
     void apply_rows_focus(Screen screen);
+    // The pages the settings document draws: Settings and the settings split out of it (2026-10-13).
+    bool settings_like(Screen screen) {
+        return screen == Screen::Settings || screen == Screen::Graphics || screen == Screen::Gameplay ||
+               screen == Screen::Capture || screen == Screen::Photo || screen == Screen::Video;
+    }
     // Takes a row out of a list entirely. Only the files surface needs this now: the settings and
     // launcher lists build their rows from the model, so a row that should not be drawn is simply
     // not emitted, and the default prefix that used to serve them has gone with it.
     void hide_row(Rml::ElementDocument* doc, int row, const char* prefix);
     void show(Screen screen);
     void handle_nav(Nav nav);
+    void click_section(const std::string& id);
+    void click_prompt(const std::string& id);
+    void click_key(const std::string& id);
+    void open_keyboard();
+    void close_keyboard();
+    bool g_kb_open_flag();
+    void refresh_shell();
+    // The first page of the section the router is on (phase 96): where Back from a page goes.
+    Screen section_root_screen();
     // The two warnings the user asked for on 2026-09-26. Declared here because they are raised
     // from the row handlers well above the confirmation machinery they are built on.
     void confirm_debugging(Screen back);
@@ -505,12 +504,39 @@ namespace {
             if (event.GetId() == Rml::EventId::Mouseup && event.GetParameter<int>("button", 0) != 0) {
                 return;
             }
+            // A click makes the Select sound once it has acted (phase 111), whichever branch below
+            // took it; not the window's buttons, the path field, or a press that is already a
+            // key's (the modal's close is Back, which sounds as Back).
+            struct ClickSound {
+                bool armed = false;
+                ~ClickSound() {
+                    if (armed) {
+                        oot::ui::sound::play(oot::ui::sound::Cue::Select);
+                    }
+                }
+            } sound;
             for (Rml::Element* e = event.GetTargetElement(); e != nullptr; e = e->GetParentNode()) {
                 const std::string id = e->GetId();
                 if (id.empty()) {
                     continue;
                 }
+                // A BUTTON'S WORDS ARE NEVER THE BUTTON (the user, 2026-10-12: "the "your slots" do
+                // not allow clicking/selecting and then choosing save over or delete? its almost like
+                // those tow options are never available?"). A button whose words change carries them
+                // in a span with an id of its own ("moments-delete-label", so the shell can write
+                // "Save over" or "Yes, delete it"), and the Moments match below takes every id that
+                // begins "moments-", so a press on the words of Delete, Save over or Load reached it
+                // as the label's id, which is no button, and nothing happened; only a press on the
+                // button's edge worked. A label passes the press up to the button it sits in, as an
+                // unnamed glyph always has. The other screens matched their buttons by exact name and
+                // so had been walking past their labels already.
+                if ((id.size() > 6) && (id.compare(id.size() - 6, 6, "-label") == 0)) {
+                    continue;
+                }
                 std::fprintf(stderr, "[ui] press on \"%s\"\n", id.c_str());
+                sound.armed = id.compare(0, 4, "win-") != 0 && id != "modal-close" && id != "browse-input" &&
+                              id != "prompt-accept" && id != "prompt-back" && id != "prompt-change" && id != "prompt-close" &&
+                              id != "prompt-close-also";
                 if (id == "win-min" || id == "win-max" || id == "win-close") {
                     click_chrome(id);
                     return;
@@ -569,6 +595,10 @@ namespace {
                     click_step(id);
                     return;
                 }
+                if (id.compare(0, 5, "pick-") == 0) {
+                    click_pick(id);
+                    return;
+                }
                 if (id.compare(0, 6, "wprev-") == 0 || id.compare(0, 6, "wnext-") == 0) {
                     click_warp_step(id);
                     return;
@@ -579,6 +609,20 @@ namespace {
                 }
                 if (id.compare(0, 5, "mrow-") == 0 || id.compare(0, 8, "moments-") == 0) {
                     click_moments(id);
+                    return;
+                }
+                // The dial's medallions and the prompts (phase 96): a medallion opens its
+                // section, a prompt does what it says.
+                if (id.compare(0, 4, "sec-") == 0) {
+                    click_section(id);
+                    return;
+                }
+                if (id.compare(0, 4, "key-") == 0) {
+                    click_key(id);
+                    return;
+                }
+                if (id.compare(0, 7, "prompt-") == 0) {
+                    click_prompt(id);
                     return;
                 }
                 const char* prefixes[] = { "row-", "brow-", "crow-" };
@@ -641,6 +685,11 @@ namespace {
             return;
         }
         if (Rml::Element* rows = doc->GetElementById(id)) {
+            // A PAGE IN THE SHELL (phase 96) is the shell's box high, and its list fills it.
+            if (doc->IsClassSet("in-shell")) {
+                rows->RemoveProperty(Rml::PropertyId::Height);
+                return;
+            }
             // In a side panel the case is the window's full height and the stylesheet gives the
             // list everything between the lid and the foot (case.rcss), so no height is set. The
             // launcher's own window (Browse) is never a panel.
@@ -667,6 +716,9 @@ namespace {
         Rml::Element* rows = doc->GetElementById(id);
         if (rows == nullptr) {
             return;
+        }
+        if (doc->IsClassSet("in-shell")) {
+            pixels = 0.0f;
         }
         // NO CAP AT ALL IN A SIDE PANEL (2026-09-24): the case is the window's full height there,
         // so the list grows into everything between the lid and the actions and the foot sits on
@@ -716,7 +768,8 @@ namespace {
     // in the settings that opens it, LightingReset the sub menu's last row (2026-09-24).
     // LightingSweep is the sub menu's harness row: every option of every row captured in turn
     // (main/sweep.h, the user's ask of 2026-09-24).
-    enum class RowKind { Setting, Rom, Controls, Files, Moments, Debug, Play, Quit, Lighting, LightingMenu, LightingReset, LightingSweep, Warps, TimeOfDay, Piece, HudMenu };
+    enum class RowKind { Setting, Rom, Controls, Files, Moments, Debug, Play, Quit, Lighting, LightingMenu, LightingReset, LightingSweep, Warps, TimeOfDay, Piece, HudMenu,
+                         CapturePhoto, CaptureVideo };
 
     struct RowSpec {
         RowKind kind = RowKind::Setting;
@@ -741,20 +794,17 @@ namespace {
         static const int recorder = oot::ui::row_index("recorder");
         static const int length = oot::ui::row_index("recordlength");
         static const int comparison = oot::ui::row_index("comparisonshots");   // 2026-10-09
-        return (row >= 0) && (row == recorder || row == length || row == comparison);
+        // The resize candidates (2026-10-13, ui_settings.h), until the cause is confirmed.
+        static const int resize_refresh = oot::ui::row_index("resizerefresh");
+        static const int scale_reload = oot::ui::row_index("scalereload");
+        static const int smooth_scroll = oot::ui::row_index("smoothscroll");
+        return (row >= 0) && (row == recorder || row == length || row == comparison || row == resize_refresh ||
+                              row == scale_reload || row == smooth_scroll);
     }
 
     // COMPARISON SHOTS SHOWS ONLY WHILE SCREENSHOTS IS ON (the user, 2026-10-09: "this being enabled
     // should dynamically then show an option for comparison mode"). The list is rebuilt on every
     // step, so turning Screenshots on brings the row at once.
-    // THE HUD'S ROWS (2026-10-09, src/game/hud.h) belong to the HUD screen alone: every key that
-    // begins "hud", so a row added to the HUD menu later is kept out of the main list without a
-    // range to widen. "hud" itself, HUD sits, was the main list's Interface ratio until stage
-    // three of the HUD brought it here, where the rest of where the HUD sits is.
-    bool is_hud_setting(int row) {
-        return std::strncmp(oot::ui::row_key(row), "hud", 3) == 0;
-    }
-
     // A ROW TO TICK (the user, 2026-10-09: "'comes back for' needs to be all separate options as just
     // checkbox toggles"): what brings the HUD back, each drawn as a box rather than a stepper, and
     // switched by any press on it, Enter, a click, Left or Right.
@@ -769,7 +819,7 @@ namespace {
             return nullptr;
         }
         const std::string key = oot::ui::row_key(spec.setting);
-        if (key == "hudwaketarget") {
+        if (key == "hudwaketarget" || (key == "hudwakelow" && oot::ui::settings().hud_fade == 2)) {
             return "Comes back for";
         }
         if (key == "hudfadehearts") {
@@ -781,38 +831,24 @@ namespace {
         if (key == "hud") {
             return "Place";
         }
+        if (key == "hudreticle") {
+            return "Targeting";
+        }
         return nullptr;
     }
 
-    bool is_hidden_debug_setting(int row) {
+    bool is_hidden_debug_setting(int row, const oot::ui::Settings& s) {
         static const int comparison = oot::ui::row_index("comparisonshots");
-        return (row >= 0) && (row == comparison) && (oot::ui::settings().screenshots == 0);
+        return (row >= 0) && (row == comparison) && (s.screenshots == 0);
     }
 
-    // THE TEXTURE DETAIL ROW SHOWS ONLY WHILE A PACK IS CHOSEN (the user, 2026-10-07: "when you
-    // enable it, then it adds an additional option right underneath it"). With no pack it would
-    // be a row that does nothing, which this file's own notes call worse than no row. The list is
-    // rebuilt on every step, so moving the pack row on or off brings it or takes it away at once,
-    // and it sits directly under the pack row because it is the next row in the table.
-    bool is_hidden_setting(int row) {
-        static const int detail = oot::ui::row_index("texturedetail");
-#ifdef __EMSCRIPTEN__
-        // A page has no updater (it is updated by publishing it) and no video recorder (Media
-        // Foundation), so their rows would do nothing there (web/stubs.cpp).
-        static const int updates = oot::ui::row_index("updates");
-        static const int video = oot::ui::row_index("videorecording");
-        if (row >= 0 && (row == updates || row == video)) {
-            return true;
-        }
-#endif
-        return (row >= 0) && (row == detail) && (oot::ui::settings().texture_pack == 0);
-    }
 
     bool is_debug_lighting(int row) {
         const std::string key = oot::ui::lighting::row_key(row);
-        return key == "inspect" || key == "experiment" || key.compare(0, 6, "window") == 0 ||
+        return key == "inspect" || key == "experiment" ||
+               (key.compare(0, 6, "window") == 0 && key != "windowshafts") ||   // the window tuning tools
                key == "lightstone" || key == "glowtest" ||   // the candidates of 2026-10-08
-               key == "drawnbeam";                           // the game's beam beside the shafts, 2026-10-09
+               key.compare(0, 3, "fix") == 0;                // a candidate fix, one switch each (the rule of 2026-10-12)
     }
 
     // THE REFLECTIONS ARE GONE (the user, 2026-09-30, after six candidates: "nope none work and
@@ -832,10 +868,11 @@ namespace {
         return key == "reflections" || key == "reflectionrange";
     }
 
-    std::vector<RowSpec> rows_for(Screen screen) {
+    // The rows of a screen under the settings `s`: which rows there are, and in what order. The
+    // rows come and go with the choices they depend on (a pack brings Texture detail, and so on).
+    std::vector<RowSpec> rows_for(Screen screen, const oot::ui::Settings& s) {
         std::vector<RowSpec> rows;
         if (screen == Screen::Hud) {
-            const oot::ui::Settings& s = oot::ui::settings();
             const auto add = [&rows](const char* key) {
                 const int row = oot::ui::row_index(key);
                 if (row >= 0) {
@@ -862,7 +899,15 @@ namespace {
                     add("hudwakelow");
                     add("hudwakeitems");
                     add("hudwakepause");
+                    add("hudwakemap");
                     add("hudwakeany");
+                }
+                // AND LOW HEALTH WHILE IT IS ALWAYS FADED (the user, 2026-10-13, on the hearts coming
+                // back at low health with no row to say so: "needs to function in a way that makes
+                // sense"). hud.cpp has always let the hearts up at low health in Always, and the row
+                // that decides it was shown only When idle, so it acted unseen. It shows here too now.
+                else if (s.hud_fade == 2) {
+                    add("hudwakelow");
                 }
                 add("hudfadehearts");
                 add("hudfademagic");
@@ -891,6 +936,9 @@ namespace {
                 add("hudtop");
                 add("hudbottom");
             }
+            // The targeting arrows (2026-10-13), each its own row.
+            add("hudreticle");
+            add("hudmarker");
             return rows;
         }
         if (screen == Screen::Debug) {
@@ -904,7 +952,7 @@ namespace {
             // same apply: only where it is drawn has changed.
             rows.push_back(RowSpec{ RowKind::TimeOfDay, 0 });
             for (int i = 0; i < oot::ui::row_count(); ++i) {
-                if (is_debug_setting(i) && !is_hidden_debug_setting(i)) {
+                if (is_debug_setting(i) && !is_hidden_debug_setting(i, s)) {
                     rows.push_back(RowSpec{ RowKind::Setting, i });
                 }
             }
@@ -951,97 +999,107 @@ namespace {
             rows.push_back(RowSpec{ RowKind::LightingReset, 0 });
             return rows;
         }
+        // THE PLAY SECTION (the menus plan, phase 99): the launcher's page is the ROM and the two
+        // actions, as the design decision draws it. Every setting is in its own section on the
+        // dial now (Settings, Lighting, HUD, Controls, Moments), so the long list it carried
+        // before the shell would only repeat them.
         if (screen == Screen::Launch) {
             rows.push_back(RowSpec{ RowKind::Rom, 0 });
+            rows.push_back(RowSpec{ RowKind::Play, 0 });
+            rows.push_back(RowSpec{ RowKind::Quit, 0 });
+            return rows;
         }
-        // THE TEXT AND THE HEART ROWS SIT WITH THEIR KIND (2026-10-08): appended to the table so
-        // nothing renumbers, shown under Camera drift (the two text rows) and under Volume (the
-        // beep), by key.
-        static const int text_speed = oot::ui::row_index("textspeed");
-        static const int text_skip = oot::ui::row_index("textskip");
-        static const int health_beep = oot::ui::row_index("lowhealthbeep");
-        static const int camera_drift = oot::ui::row_index("cameradrift");
-        static const int volume = oot::ui::row_index("volume");
-        // Screenshots sits under Menu placement (2026-10-09), placed the same way.
-        static const int screenshots = oot::ui::row_index("screenshots");
-        static const int menu_side = oot::ui::row_index("menu");
-        // The video recorder's rows under Screenshots (2026-10-09), its size, quality and sound
-        // only while it is On, the way Texture detail follows the pack.
-        static const int video = oot::ui::row_index("videorecording");
-        static const int video_size = oot::ui::row_index("videosize");
-        static const int video_quality = oot::ui::row_index("videoquality");
-        static const int video_sound = oot::ui::row_index("videosound");
-        static const int video_mode = oot::ui::row_index("videomode");
-        static const int microphone = oot::ui::row_index("microphone");
-        static const int mic_device = oot::ui::row_index("micdevice");
-        static const int mic_level = oot::ui::row_index("miclevel");
-        // Photo mode under Screenshots too (2026-10-09), ahead of the video rows.
-        static const int photo_mode = oot::ui::row_index("photomode");
-        static const int video_shows = oot::ui::row_index("videoshows");
-        static const int screenshot_shows = oot::ui::row_index("screenshotshows");
-        for (int i = 0; i < oot::ui::row_count(); ++i) {
-            if (is_debug_setting(i) || is_hidden_setting(i) || is_hud_setting(i) || i == text_speed || i == text_skip || i == health_beep ||
-                i == screenshots || i == video || i == video_size || i == video_quality || i == video_sound ||
-                i == video_mode || i == photo_mode || i == video_shows || i == screenshot_shows || i == microphone ||
-                i == mic_device || i == mic_level) {
-                continue;
+        // THE SETTINGS SPLIT (the user, 2026-10-13: "right now the settings menu is huge ... people
+        // don't have to scroll so much through the main menu"): each page lists only its own rows,
+        // by key, in the order drawn. Settings keeps "anything that doesn't directly affect the
+        // game"; Graphics the picture and the textures, with the lighting a page of it; Gameplay "the
+        // in-game stuff behave a little differently"; Capture its pages, Photo and Video (Streaming
+        // will be a third). Rows still come and go with the ones they depend on.
+        const auto add = [&rows](const char* key) {
+            const int row = oot::ui::row_index(key);
+            if (row >= 0) {
+                rows.push_back(RowSpec{ RowKind::Setting, row });
             }
-            rows.push_back(RowSpec{ RowKind::Setting, i });
-            if (i == camera_drift) {
-                rows.push_back(RowSpec{ RowKind::Setting, text_speed });
-                rows.push_back(RowSpec{ RowKind::Setting, text_skip });
+        };
+        if (screen == Screen::Graphics) {
+            for (const char* key : { "window", "resolution", "downsampling", "aspect", "antialiasing", "renderdistance",
+                                     "framerate", "counter", "texturepack" }) {
+                add(key);
             }
-            if (i == menu_side) {
-                rows.push_back(RowSpec{ RowKind::Setting, screenshots });
-                if (oot::ui::settings().screenshots != 0) {
-                    rows.push_back(RowSpec{ RowKind::Setting, screenshot_shows });
-                }
-                rows.push_back(RowSpec{ RowKind::Setting, photo_mode });
-                rows.push_back(RowSpec{ RowKind::Setting, video });
-                if (oot::ui::settings().video_recording != 0) {
-                    rows.push_back(RowSpec{ RowKind::Setting, video_shows });
-                    rows.push_back(RowSpec{ RowKind::Setting, video_size });
-                    rows.push_back(RowSpec{ RowKind::Setting, video_quality });
-                    rows.push_back(RowSpec{ RowKind::Setting, video_sound });
-                    rows.push_back(RowSpec{ RowKind::Setting, microphone });
-                    if (oot::ui::settings().microphone != 0) {
-                        rows.push_back(RowSpec{ RowKind::Setting, mic_device });
-                        rows.push_back(RowSpec{ RowKind::Setting, mic_level });
-                    }
-                    rows.push_back(RowSpec{ RowKind::Setting, video_mode });
-                }
+            // Texture detail only while a pack is chosen (the user, 2026-10-07: "when you enable it,
+            // then it adds an additional option right underneath it").
+            if (s.texture_pack != 0) {
+                add("texturedetail");
             }
-            if (i == volume) {
-                rows.push_back(RowSpec{ RowKind::Setting, health_beep });
-            }
+            rows.push_back(RowSpec{ RowKind::LightingMenu, 0 });
+            return rows;
         }
-        rows.push_back(RowSpec{ RowKind::LightingMenu, 0 });
-        rows.push_back(RowSpec{ RowKind::HudMenu, 0 });
-        rows.push_back(RowSpec{ RowKind::Controls, 0 });
+        if (screen == Screen::Gameplay) {
+            for (const char* key : { "camera", "cameraaxes", "aimaxes", "aimaxesleft", "cameradistance", "cameradrift",
+                                     "textspeed", "textskip", "lowhealthbeep" }) {
+                add(key);
+            }
+            return rows;
+        }
+        if (screen == Screen::Capture) {
+            rows.push_back(RowSpec{ RowKind::CapturePhoto, 0 });
+            rows.push_back(RowSpec{ RowKind::CaptureVideo, 0 });
+            return rows;
+        }
+        if (screen == Screen::Photo) {
+            add("screenshots");
+            // What a picture holds, for F12's and for photo mode's own (which Screenshots does not gate).
+            if (s.screenshots != 0 || s.photo_mode != 0) {
+                add("screenshotshows");
+                add("screenshotsize");
+            }
+            add("photomode");
+            // Photo mode's own HUD (ui_settings.h): where it starts, and how far Dimmed takes it, which
+            // the control reaches whatever the start.
+            if (s.photo_mode != 0) {
+                add("photohud");
+                add("photohuddim");
+            }
+            return rows;
+        }
+        if (screen == Screen::Video) {
+            add("videorecording");
+            if (s.video_recording != 0) {
+                for (const char* key : { "videoshows", "videosize", "videoquality", "videosound", "microphone" }) {
+                    add(key);
+                }
+                if (s.microphone != 0) {
+                    add("micdevice");
+                    add("miclevel");
+                }
+                add("videomode");
+            }
+            return rows;
+        }
+        // Settings itself: the program, not the game.
+        for (const char* key : { "updates", "autosave", "saveonquit", "resumeonstart", "menu", "interfacesize", "volume",
+                                 "menusounds" }) {
+            add(key);
+        }
+        if (s.menu_sounds != 0) {
+            add("menusoundvolume");
+        }
+        // Lighting, the HUD, Controls and Moments are sections on the dial now (phase 96), so their
+        // rows here went; Your files is a page of this section.
         rows.push_back(RowSpec{ RowKind::Files, 0 });
-        // Saved moments (phase 77): in play, save anywhere and resume; from the launcher, resume
-        // only, applied once a file is loaded.
-        rows.push_back(RowSpec{ RowKind::Moments, 0 });
         // The debug menu, and IN PLAY ONLY. Every row in it asks the game to go somewhere, and
         // there is no game to send anywhere from the launcher: offering it there would be a menu
         // whose every row does nothing, which this project's own settings note calls worse than
         // no menu at all.
-        if (screen != Screen::Launch) {
+        if (g_game_started) {
             rows.push_back(RowSpec{ RowKind::Debug, 0 });
         }
 #ifdef __EMSCRIPTEN__
         // No Quit on a page: there is nothing to quit to, and a program that has exited leaves the
         // page dead. load() hides its button and the window's own.
-        if (screen == Screen::Launch) {
-            rows.push_back(RowSpec{ RowKind::Play, 0 });
-        }
         return rows;
 #endif
-        if (screen == Screen::Launch) {
-            rows.push_back(RowSpec{ RowKind::Play, 0 });
-            rows.push_back(RowSpec{ RowKind::Quit, 0 });
-        }
-        else {
+        {
             // QUIT IN PLAY TOO. When Play and Quit moved out of the list into the launcher's
             // action bar, the in-game menu was left with no way out of the program at all (the
             // user, 2026-09-23: "The quit button is actually missing inside the game"), which
@@ -1050,6 +1108,10 @@ namespace {
             rows.push_back(RowSpec{ RowKind::Quit, 0 });
         }
         return rows;
+    }
+
+    std::vector<RowSpec> rows_for(Screen screen) {
+        return rows_for(screen, oot::ui::settings());
     }
 
     Rml::ElementDocument* rows_doc(Screen screen) {
@@ -1080,7 +1142,12 @@ namespace {
     // are a window of their own and are not in this list.
     Rml::ElementDocument* panel_doc(Screen screen) {
         switch (screen) {
-            case Screen::Settings: return g_settings_doc;
+            case Screen::Settings:
+            case Screen::Graphics:
+            case Screen::Gameplay:
+            case Screen::Capture:
+            case Screen::Photo:
+            case Screen::Video:    return g_settings_doc;
             case Screen::Lighting: return g_lighting_doc;
             case Screen::Debug:    return g_debug_doc;
             case Screen::Hud:      return g_hud_doc;
@@ -1093,20 +1160,76 @@ namespace {
         }
     }
 
+    Rml::ElementDocument* g_shell_doc_for_inset = nullptr;   // the shell, once loaded (phase 96)
+
+    // THE PICTURE EASES ASIDE AND BACK (phase 114): the panel's opening and closing move the game's
+    // picture, and it moves over the base duration on the quartic curve rather than snapping, from
+    // wherever it stands now (a turn of the placement row mid-move simply sets a new end).
+    struct InsetMotion {
+        float from_left = 0.0f;
+        float from_right = 0.0f;
+        float left = 0.0f;       // where it stands now
+        float right = 0.0f;
+        int to_left = 0;
+        int to_right = 0;
+        std::chrono::steady_clock::time_point start{};
+        bool running = false;
+    };
+    InsetMotion g_inset;
+
+    float quartic_in_out(float t) {
+        t = std::clamp(t, 0.0f, 1.0f);
+        const float u = 1.0f - t;
+        return t < 0.5f ? 8.0f * t * t * t * t : 1.0f - 8.0f * u * u * u * u;
+    }
+
+    void inset_toward(int left, int right) {
+        if (left == g_inset.to_left && right == g_inset.to_right) {
+            return;
+        }
+        g_inset.from_left = g_inset.left;
+        g_inset.from_right = g_inset.right;
+        g_inset.to_left = left;
+        g_inset.to_right = right;
+        g_inset.start = std::chrono::steady_clock::now();
+        g_inset.running = true;
+    }
+
+    // Once a frame: the picture's inset a step further along its ease.
+    void poll_inset() {
+        if (!g_inset.running) {
+            return;
+        }
+        const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - g_inset.start).count();
+        const float t = seconds / oot::ui::tokens::duration_base;
+        const float e = quartic_in_out(t);
+        g_inset.left = g_inset.from_left + (static_cast<float>(g_inset.to_left) - g_inset.from_left) * e;
+        g_inset.right = g_inset.from_right + (static_cast<float>(g_inset.to_right) - g_inset.from_right) * e;
+        if (t >= 1.0f) {
+            g_inset.left = static_cast<float>(g_inset.to_left);
+            g_inset.right = static_cast<float>(g_inset.to_right);
+            g_inset.running = false;
+        }
+        oot::renderer::set_picture_inset(static_cast<int>(std::lround(g_inset.left)), static_cast<int>(std::lround(g_inset.right)));
+    }
+
     void apply_picture_inset(Screen screen) {
         const int side = oot::ui::settings().menu_side;
-        const bool panel = (side != 0) && (panel_doc(screen) != nullptr);
+        // THE PICTURE RUNS UNDER THE CUT (phase 96): it moves aside by the docked panel's ground,
+        // so the slanted edge and its gold line lie over the picture, as the decision draws them.
+        const bool panel = (side != 0) && g_game_started && (screen != Screen::None);
         int pixels = 0;
         if (panel) {
-            Rml::ElementDocument* doc = panel_doc(screen);
-            Rml::Element* box = (doc != nullptr) ? doc->QuerySelector(".case") : nullptr;
-            float width = (box != nullptr) ? box->GetBox().GetSize(Rml::BoxArea::Margin).x : 0.0f;
+            Rml::Element* ground = (g_shell_doc_for_inset != nullptr) ? g_shell_doc_for_inset->QuerySelector(".sh-ground") : nullptr;
+            float width = (ground != nullptr) ? ground->GetBox().GetSize(Rml::BoxArea::Border).x : 0.0f;
             if (width <= 0.0f) {
-                width = 620.0f * ((g_context != nullptr) ? g_context->GetDensityIndependentPixelRatio() : 1.0f);
+                // The panel less its cut (tokens.rcss, --panel-width less --cut-edge-width), until
+                // the shell is laid out.
+                width = 580.0f * ((g_context != nullptr) ? g_context->GetDensityIndependentPixelRatio() : 1.0f);
             }
             pixels = std::min(static_cast<int>(std::lround(width)), g_width / 2);
         }
-        oot::renderer::set_picture_inset(side == 2 ? pixels : 0, side == 1 ? pixels : 0);
+        inset_toward(side == 2 ? pixels : 0, side == 1 ? pixels : 0);
     }
 
     // Where the two menus sit: over the picture, as a panel on the right, or as a panel on the
@@ -1116,8 +1239,11 @@ namespace {
         const int placement = oot::ui::settings().menu_side;
         const bool side = placement != 0;
         const bool left = placement == 2;
+        // A DIALOG IS A LAYER OVER THE MENU, NOT A PANEL OF ITS OWN (phase 107): the confirmation and
+        // the first run's questions stay centered over the shell with their scrim, whatever the
+        // placement, so they read as a question asked over the page rather than a page replacing it.
         for (Screen screen : { Screen::Settings, Screen::Lighting, Screen::Debug, Screen::Hud, Screen::Warps, Screen::Moments,
-                               Screen::Controls, Screen::About, Screen::Ask }) {
+                               Screen::Controls, Screen::About }) {
             Rml::ElementDocument* doc = panel_doc(screen);
             if (doc == nullptr) {
                 continue;
@@ -1128,6 +1254,8 @@ namespace {
             }
         }
         apply_picture_inset(g_screen);
+        // The shell takes the placement too: docked, mirrored or centered (phase 96).
+        refresh_shell();
     }
 
     int g_focus = 0;
@@ -1174,137 +1302,208 @@ namespace {
         return screen == Screen::Launch ? "launch-rows" : "settings-rows";
     }
 
-    // The value column for one row, as markup.
-    //
-    // A SETTING GETS THE TWO STEPS either side of its value. A click used to move a setting one
-    // way only, and a choice stops at its ends on purpose, so the last option was a dead end for
-    // anyone using the mouse (the user, 2026-09-20: "it toggled up to 240 and then just stays
-    // there and I have no way to get back down"). These do exactly what Left and Right do, and
-    // being on screen is the other half of the fix: the keys worked and nothing said so.
-    std::string stepper_html(size_t row, const std::string& text, bool low, bool high) {
-        const std::string n = std::to_string(row);
-        return "<span class=\"step" + std::string(low ? " spent" : "") + "\" id=\"prev-" + n + "\">&#8249;</span>"
-               "<span class=\"shown\">" + escape(text) + "</span>"
-               "<span class=\"step" + std::string(high ? " spent" : "") + "\" id=\"next-" + n + "\">&#8250;</span>";
-    }
-
-    // A box to tick where a stepper's value would sit, its right edge where the values' is, filled
-    // while the row is on. It carries the row's next- id, so a press on it switches the row as a
-    // press on the row does (nudge_setting toggles a box whichever way it is stepped).
-    std::string check_html(size_t row, bool on) {
-        const std::string n = std::to_string(row);
-        return "<span class=\"shown\"><span class=\"check" + std::string(on ? " ticked" : "") + "\" id=\"next-" + n +
-               "\"><span class=\"tick\"></span></span></span><span class=\"step-gap\"></span>";
-    }
-
-    // An action row says nothing at rest (the user's note of 2026-09-19: three rows reading
-    // "Enter" were confusing); the text is there in a span the stylesheet shows only while the
-    // row is focused or under the pointer.
-    std::string action_html(const std::string& text) {
-        return "<span class=\"act\">" + escape(text) + "</span>";
-    }
-
-    // Put the live values into a rows document.
-    //
-    // THE LIST IS BUILT WHOLE FROM THE MODEL, and the document holds no rows of its own. It used
-    // to fill a fixed run of row elements typed into the .rml, and that arrangement failed the way
-    // it was always going to: on 2026-09-22 two new settings pushed Controls, Your files and Debug
-    // past the last slot, and a row with no element simply does not appear. No error, no gap, a
-    // menu that looked entirely normal and was missing three entries. The user's answer was the
-    // right one, and it is what the controls document and the debug menu already did: build the
-    // rows, and let the container scroll.
-    //
-    // Rebuilt whole on every change, which at the rate a person presses keys costs nothing and
-    // keeps one path rather than a fast one and a slow one that have to agree.
-    void reflect_rows(Screen screen) {
-        Rml::ElementDocument* doc = rows_doc(screen);
-        if (doc == nullptr) {
-            return;
+    // Which of the model's lists a rows document draws.
+    oot::ui::rows::List rows_list(Screen screen) {
+        switch (screen) {
+            case Screen::Launch:   return oot::ui::rows::List::Launch;
+            case Screen::Lighting: return oot::ui::rows::List::Lighting;
+            case Screen::Hud:      return oot::ui::rows::List::Hud;
+            case Screen::Debug:    return oot::ui::rows::List::Debug;
+            default:               return oot::ui::rows::List::Settings;
         }
-        Rml::Element* container = doc->GetElementById(rows_container(screen));
-        if (container == nullptr) {
-            return;
+    }
+
+    // WHAT EACH ROW SAYS (the menus plan, phase 95), from the tables and the settings `s` and
+    // lighting `l` alone: its label, the value shown and how it is drawn, a note, a divider before
+    // it. Play and Quit are not rows here; they are the action bar's buttons and keep their place
+    // in rows_for only so the focus can walk to them.
+    // THE GLYPH IN A ROW'S RING (the menus plan, phase 100, the decision's plates): one of the
+    // bundled icons for what the row is about, by its key's start, so a row added to a table later
+    // takes its family's glyph without a line here. The first match wins, so the longer keys come
+    // before the shorter ones they begin with.
+    const char* row_icon(const char* key) {
+        static const std::pair<const char*, const char*> TABLE[] = {
+            // Settings
+            { "window", "app-window" }, { "resolution", "scan" }, { "downsampling", "scaling" },
+            { "aspect", "ratio" }, { "antialiasing", "sparkles" }, { "renderdistance", "eye" },
+            { "framerate", "gauge" }, { "counter", "gauge" }, { "recorder", "film" }, { "recordlength", "timer" },
+            { "updates", "download" }, { "autosave", "save" }, { "saveonquit", "save" },
+            { "resumeonstart", "rotate-ccw" }, { "cameraaxes", "move-3d" }, { "cameradistance", "camera" },
+            { "cameradrift", "move-3d" }, { "camera", "camera" }, { "aimaxes", "crosshair" }, { "menusound", "volume-2" }, { "menu", "list" }, { "interfacesize", "scaling" },
+            { "volume", "volume-2" }, { "lowhealthbeep", "volume-2" }, { "texture", "image" }, { "text", "type" },
+            { "screenshot", "image" }, { "comparisonshots", "image" }, { "video", "video" },
+            { "photomode", "aperture" }, { "photohud", "layers" }, { "mic", "volume-2" },
+            { "hudwake", "eye" }, { "hudsize", "scaling" }, { "hudcolor", "palette" }, { "huddelay", "timer" },
+            { "hudspeed", "timer" }, { "hudleft", "map-pin" }, { "hudright", "map-pin" }, { "hudtop", "map-pin" },
+            { "hudbottom", "map-pin" }, { "hudreticle", "crosshair" }, { "hudmarker", "crosshair" }, { "hud", "layers" },
+            // Lighting
+            { "raytracing", "sun" }, { "shadow", "moon" }, { "casters", "moon" }, { "indoorlight", "house" },
+            { "indoorambience", "mountain" }, { "outdoorambience", "mountain" }, { "indoordust", "wind" },
+            { "outdoordust", "wind" }, { "darkness", "moon" }, { "light", "lightbulb" }, { "occlusion", "layers" },
+            { "bounce", "refresh-cw" }, { "reflection", "sparkles" }, { "glowtest", "bug" }, { "glow", "sparkles" },
+            { "wind", "wind" }, { "haze", "sun" }, { "fogfade", "mountain" }, { "distancefade", "mountain" },
+            { "smoothing", "sliders-horizontal" }, { "filter", "sliders-horizontal" }, { "inspect", "eye" },
+            { "experiment", "bug" }, { "windowshafts", "sun" }, { "shaftlength", "sun" }, { "windowaim", "crosshair" },
+            { "windowtilt", "crosshair" }, { "windowturn", "crosshair" }, { "windowmove", "crosshair" },
+            // A candidate fix on the Debugging menu (the rule of 2026-10-12)
+            { "fix", "bug" },
+        };
+        for (const auto& [start, icon] : TABLE) {
+            if (std::strncmp(key, start, std::strlen(start)) == 0) {
+                return icon;
+            }
         }
+        return "sliders-horizontal";
+    }
 
-        const oot::ui::Settings& s = oot::ui::settings();
-        const std::vector<RowSpec> rows = rows_for(screen);
+    // HOW A STEPPED VALUE IS DRAWN (phase 100, the decision's plates): a short set of short options
+    // side by side, every one shown and the one in force lit (Windowed and Fullscreen; Off, 2x, 4x,
+    // 8x); a longer set as a tick per option beside the option's words; past a dozen, the words
+    // alone. `label` gives option i's words, or null for a number.
+    template <typename Label>
+    void draw_options(oot::ui::rows::Row& row, int count, int number, Label label) {
+        constexpr int MOST_SIDE_BY_SIDE = 4;
+        constexpr size_t LONGEST_SIDE_BY_SIDE = 11;
+        constexpr int MOST_TICKS = 12;
+        bool short_words = count >= 2 && count <= MOST_SIDE_BY_SIDE;
+        for (int i = 0; short_words && i < count; ++i) {
+            const char* words = label(i);
+            short_words = words != nullptr && std::strlen(words) <= LONGEST_SIDE_BY_SIDE;
+        }
+        if (short_words) {
+            for (int i = 0; i < count; ++i) {
+                row.choices.push_back({ label(i), i == number });
+            }
+        }
+        else if (count >= 2 && count <= MOST_TICKS) {
+            for (int i = 0; i < count; ++i) {
+                row.ticks.push_back(i == number ? 1 : 0);
+            }
+        }
+    }
 
-        std::string rml;
-        for (size_t i = 0; i < rows.size(); ++i) {
-            const std::string n = std::to_string(i);
-            std::string label;
-            std::string value;
-            // What the chosen option means, under the row, for a row that has one (2026-10-09).
-            const char* note = nullptr;
-
-            switch (rows[i].kind) {
+    std::vector<oot::ui::rows::Row> row_views(Screen screen, const oot::ui::Settings& s,
+                                              const oot::ui::lighting::Lighting& l) {
+        using oot::ui::rows::Row;
+        const std::vector<RowSpec> specs = rows_for(screen, s);
+        std::vector<Row> out;
+        out.reserve(specs.size());
+        for (size_t i = 0; i < specs.size(); ++i) {
+            Row row;
+            row.n = static_cast<int>(i);
+            switch (specs[i].kind) {
                 case RowKind::Setting: {
-                    const int row = rows[i].setting;
-                    label = oot::ui::row_label(row);
-                    const int number = oot::ui::get_row(s, row);
-                    const char* option = oot::ui::option_label(row, number);
+                    const int setting = specs[i].setting;
+                    row.label = oot::ui::row_label(setting);
+                    const int number = oot::ui::get_row(s, setting);
+                    const char* option = oot::ui::option_label(setting, number);
                     // A null label means the row is a number rather than a choice, which is how
                     // the volume row says so without needing a type tag.
-                    const std::string shown = option != nullptr ? std::string(option)
-                                                                : std::to_string(number) + "%";
-                    value = is_check_setting(row) ? check_html(i, number != 0)
-                                                  : stepper_html(i, shown, at_low(row, number), at_high(row, number));
-                    note = oot::ui::option_note(row, number);
+                    row.value = option != nullptr ? std::string(option) : std::to_string(number) + "%";
+                    if (is_check_setting(setting)) {
+                        row.shape = oot::ui::rows::Check;
+                        row.on = number != 0;
+                    }
+                    else {
+                        row.shape = oot::ui::rows::Stepper;
+                        row.low = at_low(setting, number);
+                        row.high = at_high(setting, number);
+                    }
+                    // What the chosen option means, under the row, for a row that has one (2026-10-09),
+                    // naming each control by what it is bound to now (with_bindings).
+                    if (const char* note = oot::ui::option_note(setting, number)) {
+                        row.note = with_bindings(note);
+                    }
+                    row.icon = row_icon(oot::ui::row_key(setting));
+                    if (row.shape == oot::ui::rows::Stepper) {
+                        draw_options(row, oot::ui::option_count(setting), number,
+                                     [setting](int i) { return oot::ui::option_label(setting, i); });
+                    }
                     break;
                 }
                 case RowKind::Lighting: {
-                    const int row = rows[i].setting;
-                    label = oot::ui::lighting::row_label(row);
-                    const int number = oot::ui::lighting::get_row(oot::ui::lighting::current(), row);
-                    value = stepper_html(i, oot::ui::lighting::option_label(row, number), number <= 0,
-                                         number >= oot::ui::lighting::option_count(row) - 1);
+                    const int setting = specs[i].setting;
+                    row.label = oot::ui::lighting::row_label(setting);
+                    const int number = oot::ui::lighting::get_row(l, setting);
+                    row.value = oot::ui::lighting::option_label(setting, number);
+                    row.shape = oot::ui::rows::Stepper;
+                    row.low = number <= 0;
+                    row.high = number >= oot::ui::lighting::option_count(setting) - 1;
+                    row.icon = row_icon(oot::ui::lighting::row_key(setting));
+                    draw_options(row, oot::ui::lighting::option_count(setting), number,
+                                 [setting](int i) { return oot::ui::lighting::option_label(setting, i); });
                     break;
                 }
                 case RowKind::LightingMenu:
-                    label = "Lighting";
-                    value = action_html("Switch each part of it on or off, and tune it");
+                    row.label = "Lighting";
+                    row.value = "Switch each part of it on or off, and tune it";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::HudMenu:
-                    label = "HUD";
-                    value = action_html("Fading, size and place");
+                    row.label = "HUD";
+                    row.value = "Fading, size and place";
+                    row.shape = oot::ui::rows::Action;
+                    break;
+                case RowKind::CapturePhoto:
+                    row.label = "Photo";
+                    row.value = "Screenshots and photo mode";
+                    row.shape = oot::ui::rows::Action;
+                    break;
+                case RowKind::CaptureVideo:
+                    row.label = "Video";
+                    row.value = "Recording, its size, quality and sound, the microphone";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::LightingSweep:
-                    label = "Sweep";
-                    value = action_html(oot::sweep::running() ? "Running; the frames and the log go where recordings go"
-                                                              : "Capture one frame per option of every row, then put yours back");
+                    row.label = "Sweep";
+                    row.value = oot::sweep::running() ? "Running; the frames and the log go where recordings go"
+                                                      : "Capture one frame per option of every row, then put yours back";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::LightingReset:
-                    label = "Reset";
-                    value = action_html("Put the low starting values back");
+                    row.label = "Reset";
+                    row.value = "Low starting values, ray tracing Off";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::Rom:
-                    label = "ROM";
-                    value = escape(rom_value());
+                    row.label = "ROM";
+                    row.value = rom_value();
+                    row.shape = oot::ui::rows::Text;
+                    // ITS SENTENCE, UNDER THE ROW (the user, 2026-10-13, asked whether to bring back the
+                    // reason a ROM was refused: "yes"). The sentence lost its element on 2026-09-20
+                    // (102f1e4), so a refused file said only "Refused" while the website listed why. Why it
+                    // was refused, how to give one when none is found, and a note an action left
+                    // (Checking, Choose a ROM first), which wins until the ROM changes, as it always did.
+                    row.note = g_launch_note.empty() ? rom_note() : g_launch_note;
                     break;
                 case RowKind::Controls:
-                    label = "Controls";
-                    value = action_html("Click or press Enter to open");
+                    row.label = "Controls";
+                    row.value = "Click or press Enter to open";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::Debug:
-                    label = "Debugging";
-                    value = action_html("Tools for development, not for playing");
+                    row.label = "Debugging";
+                    row.value = "Tools for development, not for playing";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::TimeOfDay:
-                    label = "Time of day";
+                    row.label = "Time of day";
                     // Never spent at either end: the list wraps, so a person can walk round the
                     // clock in one direction rather than back up the whole row.
-                    value = stepper_html(i, time_label(), false, false);
+                    row.value = time_label();
+                    row.shape = oot::ui::rows::Stepper;
                     break;
                 case RowKind::Warps:
-                    label = "Warps";
-                    value = action_html("Go anywhere in the game");
+                    row.label = "Warps";
+                    row.value = "Go anywhere in the game";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::Piece: {
                     // Named by the list's place in the room's file, which is the name the
                     // decompilation's extracted files carry (DL_03xxxxxx), so a piece found by eye
                     // here can be looked up there.
                     const std::vector<oot::room_pieces::Piece> pieces = oot::room_pieces::list();
-                    const int at = rows[i].setting;
+                    const int at = specs[i].setting;
                     if (at < 0 || at >= static_cast<int>(pieces.size())) {
                         continue;
                     }
@@ -1312,53 +1511,90 @@ namespace {
                     char name[96];
                     std::snprintf(name, sizeof(name), "Room %d, %08X (%d of %d white%s)", piece.room, 0x03000000u | piece.offset,
                                   piece.white, piece.vertices, piece.translucent ? ", see-through" : "");
-                    label = name;
-                    value = stepper_html(i, oot::room_pieces::state_label(oot::room_pieces::state_of(piece)), false, false);
+                    row.label = name;
+                    row.value = oot::room_pieces::state_label(oot::room_pieces::state_of(piece));
+                    row.shape = oot::ui::rows::Stepper;
                     break;
                 }
                 // Where everything actually is, and the way to take it all off the machine. The
                 // answer to "I cannot find my saves", which is the real objection to a program
                 // putting a person's files anywhere they did not pick themselves.
                 case RowKind::Files:
-                    label = "Your files";
-                    value = action_html("Click or press Enter to open");
+                    row.label = "Your files";
+                    row.value = "Click or press Enter to open";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::Moments:
-                    label = "Moments";
-                    value = action_html(g_game_started ? "Save anywhere, resume there" : "Resume a saved moment");
+                    row.label = "Moments";
+                    row.value = g_game_started ? "Save anywhere, resume there" : "Resume a saved moment";
+                    row.shape = oot::ui::rows::Action;
                     break;
                 // Play and Quit are ACTIONS and are drawn in the action bar below the list (the
                 // user, twice, most recently 2026-09-20: "I asked for the play and quit buttons to
-                // be outside of this main list"). So they are NOT EMITTED here at all, where the
-                // slotted version had to emit an empty row and then hide it. They keep their place
-                // in the row order, so everything that walks the rows still walks them, and
-                // apply_rows_focus puts the focus on the button instead.
+                // be outside of this main list"). They keep their place in the row order, so
+                // everything that walks the rows still walks them, and apply_rows_focus puts the
+                // focus on the button instead.
                 case RowKind::Play:
-#ifdef __EMSCRIPTEN__
-                    // On a page the button is the way to give it the ROM (below).
-                    set_text(doc, "act-play-label", launch::rom_ready() ? "Play" : "Load ROM");
-#else
-                    set_text(doc, "act-play-label", launch::rom_ready() ? "Play" : "Needs a ROM");
-#endif
-                    continue;
                 case RowKind::Quit:
-                    set_text(doc, "act-quit-label", "Quit");
                     continue;
             }
+            if (const char* section = section_before(screen, specs[i])) {
+                row.section = section;
+            }
+            // The rows that are not a setting take their glyph from what they are.
+            if (row.icon.empty()) {
+                switch (specs[i].kind) {
+                    case RowKind::Rom:           row.icon = "folder"; break;
+                    case RowKind::Files:         row.icon = "folder-open"; break;
+                    case RowKind::Debug:         row.icon = "bug"; break;
+                    case RowKind::Warps:         row.icon = "map-pin"; break;
+                    case RowKind::TimeOfDay:     row.icon = "clock"; break;
+                    case RowKind::Piece:         row.icon = "layers"; break;
+                    case RowKind::LightingReset: row.icon = "rotate-ccw"; break;
+                    case RowKind::LightingSweep: row.icon = "film"; break;
+                    case RowKind::LightingMenu:  row.icon = "sun"; break;
+                    case RowKind::HudMenu:       row.icon = "layers"; break;
+                    case RowKind::CapturePhoto:  row.icon = "image"; break;
+                    case RowKind::CaptureVideo:  row.icon = "video"; break;
+                    case RowKind::Controls:      row.icon = "gamepad-2"; break;
+                    case RowKind::Moments:       row.icon = "aperture"; break;
+                    default:                     row.icon = "sliders-horizontal"; break;
+                }
+            }
+            out.push_back(std::move(row));
+        }
+        return out;
+    }
 
-            if (const char* section = section_before(screen, rows[i])) {
-                rml += "<div class=\"divider\"><span class=\"divider-label\">" + escape(section) + "</span></div>";
-            }
-            rml += std::string("<div class=\"row") + (note != nullptr ? " noted" : "") + "\" id=\"row-" + n + "\">";
-            rml += "<span class=\"label\" id=\"label-" + n + "\">" + escape(label) + "</span>";
-            rml += "<span class=\"value\" id=\"value-" + n + "\">" + value + "</span>";
-            if (note != nullptr) {
-                rml += "<div class=\"row-note\">" + escape(note) + "</div>";
-            }
-            rml += "</div>";
+    // Put the live values into a rows document.
+    //
+    // THE LIST IS THE MODEL'S, and the document holds no rows of its own. It used to fill a fixed
+    // run of row elements typed into the .rml, and that arrangement failed the way it was always
+    // going to: on 2026-09-22 two new settings pushed Controls, Your files and Debug past the last
+    // slot, and a row with no element simply does not appear. Then it was built as markup in code
+    // (until phase 95); now the rows are data and one template draws them (models/rows_model).
+    //
+    // Recomputed whole on every change, which at the rate a person presses keys costs nothing and
+    // keeps one path rather than a fast one and a slow one that have to agree. The context redraws
+    // only what changed.
+    void refresh_rows(Screen screen) {
+        Rml::ElementDocument* doc = rows_doc(screen);
+        if (doc == nullptr) {
+            return;
         }
 
-        replace_rows(doc, container, rml, [&]() { cap_long_rows(doc, rows_container(screen), rows_cap(screen)); });
+        // The two actions' words, which live in the action bar rather than in a row.
+        for (const RowSpec& spec : rows_for(screen)) {
+            if (spec.kind == RowKind::Play) {
+                set_text(doc, "act-play-label", launch::rom_ready() ? "Play" : "Needs a ROM");
+            }
+            else if (spec.kind == RowKind::Quit) {
+                set_text(doc, "act-quit-label", "Quit");
+            }
+        }
+
+        oot::ui::rows::set(rows_list(screen), row_views(screen, oot::ui::settings(), oot::ui::lighting::current()));
+        cap_long_rows(doc, rows_container(screen), rows_cap(screen));
         apply_rows_focus(screen);
     }
 
@@ -1368,6 +1604,41 @@ namespace {
     // in the row order rather than duplicating what they do.
     // A step does exactly what Left and Right do on the focused row, so there is one behavior
     // and one place it is written.
+    // A CLICK ON ONE OPTION OF A SHORT SET (phase 100): steps the row to it one option at a time,
+    // through the same nudge a press of Left or Right makes, so every rule a step obeys (a warning
+    // before the recorder, the menu's placement moving) holds for a click too.
+    void click_pick(const std::string& id) {
+        int index = -1;
+        int wanted = -1;
+        if (std::sscanf(id.c_str(), "pick-%d-%d", &index, &wanted) != 2) {
+            return;
+        }
+        const std::vector<RowSpec>& specs = rows_for(g_screen);
+        if (index < 0 || index >= static_cast<int>(specs.size())) {
+            return;
+        }
+        const RowSpec spec = specs[static_cast<size_t>(index)];
+        const auto now = [&spec]() {
+            return spec.kind == RowKind::Lighting ? oot::ui::lighting::get_row(oot::ui::lighting::current(), spec.setting)
+                                                  : oot::ui::get_row(oot::ui::settings(), spec.setting);
+        };
+        g_focus = index;
+        for (int guard = 0; guard < 16 && now() != wanted; ++guard) {
+            const int before = now();
+            if (spec.kind == RowKind::Lighting) {
+                nudge_lighting(spec.setting, wanted > before ? 1 : -1);
+            }
+            else if (spec.kind == RowKind::Setting) {
+                nudge_setting(spec.setting, wanted > before ? 1 : -1);
+            }
+            if (now() == before) {
+                break;   // refused (a warning is up, or the end was reached)
+            }
+        }
+        refresh_rows(g_screen);
+        apply_rows_focus(g_screen);
+    }
+
     void click_step(const std::string& id) {
         const int index = std::atoi(id.c_str() + 5);
         const std::vector<RowSpec>& specs = rows_for(g_screen);
@@ -1389,7 +1660,7 @@ namespace {
         } else {
             nudge_setting(specs[index].setting, direction);
         }
-        reflect_rows(g_screen);
+        refresh_rows(g_screen);
         apply_rows_focus(g_screen);
     }
 
@@ -1413,42 +1684,22 @@ namespace {
         }
     }
 
+    // The rows document whose focused row should be brought into view once the context has laid
+    // it out (follow_rows_focus, from draw). The rows are drawn by the data model during the
+    // context's update, so a row added this frame has no box until then.
+    Screen g_follow = Screen::None;
+
     void apply_rows_focus(Screen screen) {
         Rml::ElementDocument* doc = rows_doc(screen);
         if (doc == nullptr) {
             return;
         }
+        oot::ui::rows::focus(rows_list(screen), g_focus);
+        g_follow = screen;
+        // The two actions are drawn outside the list, so the focus has to follow them there or
+        // walking down the screen with a pad appears to stop at the last setting.
         const std::vector<RowSpec>& specs = rows_for(screen);
-        const int count = static_cast<int>(specs.size());
-        for (int row = 0; row < count; ++row) {
-            if (Rml::Element* e = doc->GetElementById("row-" + std::to_string(row))) {
-                e->SetClass("on", row == g_focus);
-                // THE LIST SCROLLS NOW, so walking off the bottom of the case has to bring the
-                // row with it. Without this the focus carries on down a list nobody can see,
-                // which is a worse version of the bug the scrolling was meant to fix.
-                //
-                // MEASURED HERE RATHER THAN ASKED OF ScrollIntoView (2026-09-24): its nearest
-                // alignment moved the list on rows that were already in full view, so changing
-                // a value scrolled the menu. The list moves only when the row is actually
-                // outside it, and then by exactly the amount that brings it back.
-                if (row == g_focus) {
-                    if (Rml::Element* list = doc->GetElementById(rows_container(screen))) {
-                        const float scroll = list->GetScrollTop();
-                        const float top = e->GetAbsoluteOffset().y - list->GetAbsoluteOffset().y + scroll;
-                        const float bottom = top + e->GetOffsetHeight();
-                        const float view = list->GetClientHeight();
-                        const float slack = 2.0f;   // a pixel of rounding is not a reason to move
-                        if (top < scroll - slack) {
-                            list->SetScrollTop(top);
-                        }
-                        else if (bottom > scroll + view + slack) {
-                            list->SetScrollTop(bottom - view);
-                        }
-                    }
-                }
-            }
-            // The two actions are drawn outside the list, so the focus has to follow them there
-            // or walking down the screen with a pad appears to stop at the last setting.
+        for (int row = 0; row < static_cast<int>(specs.size()); ++row) {
             const char* action_id = nullptr;
             if (specs[row].kind == RowKind::Play) {
                 action_id = "act-play";
@@ -1462,6 +1713,55 @@ namespace {
                 }
             }
         }
+        // The prompts follow the focus: Change shows on a value row and goes on an action (phase 109).
+        refresh_shell();
+    }
+
+    // THE LIST SCROLLS, so walking off the bottom of the case has to bring the row with it.
+    // Without this the focus carries on down a list nobody can see, which is a worse version of
+    // the bug the scrolling was meant to fix.
+    //
+    // MEASURED HERE RATHER THAN ASKED OF ScrollIntoView (2026-09-24): its nearest alignment moved
+    // the list on rows that were already in full view, so changing a value scrolled the menu. The
+    // list moves only when the row is actually outside it, and then by exactly the amount that
+    // brings it back. Run after the context's update and before it renders.
+    // How the lists scroll to the focus: smoothly (phase 114), or at once while the Debugging
+    // toggle for it is off (a resize candidate, 2026-10-13).
+    Rml::ScrollBehavior list_scroll() {
+        return oot::ui::settings().smooth_scroll != 0 ? Rml::ScrollBehavior::Smooth : Rml::ScrollBehavior::Instant;
+    }
+
+    // Brings `e` into view in the scrolling `list`: only when it is outside it, and by exactly the
+    // amount that brings it back (the measured way, above). Shared by every list the focus walks.
+    void keep_in_view(Rml::Element* list, Rml::Element* e) {
+        if (list == nullptr || e == nullptr) {
+            return;
+        }
+        const float scroll = list->GetScrollTop();
+        const float top = e->GetAbsoluteOffset().y - list->GetAbsoluteOffset().y + scroll;
+        const float bottom = top + e->GetOffsetHeight();
+        const float view = list->GetClientHeight();
+        const float slack = 2.0f;   // a pixel of rounding is not a reason to move
+        // Smoothly, as everything in the menus moves (phase 114).
+        if (top < scroll - slack) {
+            list->ScrollTo(Rml::Vector2f(list->GetScrollLeft(), top), list_scroll());
+        }
+        else if (bottom > scroll + view + slack) {
+            list->ScrollTo(Rml::Vector2f(list->GetScrollLeft(), bottom - view), list_scroll());
+        }
+    }
+
+    void follow_rows_focus() {
+        const Screen screen = g_follow;
+        g_follow = Screen::None;
+        if (screen == Screen::None || screen != g_screen) {
+            return;
+        }
+        Rml::ElementDocument* doc = rows_doc(screen);
+        if (doc == nullptr) {
+            return;
+        }
+        keep_in_view(doc->GetElementById(rows_container(screen)), doc->GetElementById("row-" + std::to_string(g_focus)));
     }
 
     // Change a setting. A choice steps through its options and stops at the ends rather than
@@ -1545,6 +1845,8 @@ namespace {
         }
 
         switch (nav) {
+            case Nav::Default: case Nav::SectionPrev: case Nav::SectionNext:
+                return;   // the shell's (phase 96); these older screens have none
             case Nav::Up:
                 // Off the pair goes to the last ordinary row, not to the other button.
                 if (is_button) {
@@ -1584,38 +1886,48 @@ namespace {
                 }
                 else if (spec.kind == RowKind::Setting) {
                     nudge_setting(spec.setting, nav == Nav::Right ? 1 : -1);
-                    reflect_rows(screen);
+                    refresh_rows(screen);
                 }
                 else if (spec.kind == RowKind::Lighting) {
                     nudge_lighting(spec.setting, nav == Nav::Right ? 1 : -1);
-                    reflect_rows(screen);
+                    refresh_rows(screen);
                 }
                 else if (spec.kind == RowKind::TimeOfDay) {
                     nudge_time(nav == Nav::Right ? 1 : -1);
-                    reflect_rows(screen);
+                    refresh_rows(screen);
                 }
                 else if (spec.kind == RowKind::Piece) {
                     nudge_piece(spec.setting, nav == Nav::Right ? 1 : -1);
-                    reflect_rows(screen);
+                    refresh_rows(screen);
                 }
                 break;
             case Nav::Accept:
+                // THE BASELINE'S SEVENTH DEFECT: Accept on a value at its last option did nothing.
+                // Select steps forward and wraps to the first after the last (nav_values.h);
+                // Left and Right still stop at the ends.
                 switch (spec.kind) {
-                    case RowKind::Setting:
-                        nudge_setting(spec.setting, 1);
-                        reflect_rows(screen);
+                    case RowKind::Setting: {
+                        const int count = oot::ui::option_count(spec.setting);
+                        const int current = oot::ui::get_row(oot::ui::settings(), spec.setting);
+                        const bool last = count > 0 && !is_check_setting(spec.setting) && current + 1 >= count;
+                        nudge_setting(spec.setting, last ? -current : 1);
+                        refresh_rows(screen);
                         break;
-                    case RowKind::Lighting:
-                        nudge_lighting(spec.setting, 1);
-                        reflect_rows(screen);
+                    }
+                    case RowKind::Lighting: {
+                        const int count = oot::ui::lighting::option_count(spec.setting);
+                        const int current = oot::ui::lighting::get_row(oot::ui::lighting::current(), spec.setting);
+                        nudge_lighting(spec.setting, (count > 0 && current + 1 >= count) ? -current : 1);
+                        refresh_rows(screen);
                         break;
+                    }
                     case RowKind::TimeOfDay:
                         nudge_time(1);
-                        reflect_rows(screen);
+                        refresh_rows(screen);
                         break;
                     case RowKind::Piece:
                         nudge_piece(spec.setting, 1);
-                        reflect_rows(screen);
+                        refresh_rows(screen);
                         break;
                     case RowKind::LightingMenu:
                         show(Screen::Lighting);
@@ -1623,9 +1935,15 @@ namespace {
                     case RowKind::HudMenu:
                         show(Screen::Hud);
                         break;
+                    case RowKind::CapturePhoto:
+                        show(Screen::Photo);
+                        break;
+                    case RowKind::CaptureVideo:
+                        show(Screen::Video);
+                        break;
                     case RowKind::LightingReset:
                         oot::ui::lighting::apply(oot::ui::lighting::defaults());
-                        reflect_rows(screen);
+                        refresh_rows(screen);
                         break;
                     case RowKind::LightingSweep:
                         // The menu closes so the frames show the picture alone; the sweep runs
@@ -1661,7 +1979,7 @@ namespace {
                     case RowKind::Play:
                         if (launch::rom_ready()) {
                             g_launch_note = "Starting";
-                            reflect_rows(screen);
+                            refresh_rows(screen);
                             launch::request_play();
                         }
                         else {
@@ -1669,7 +1987,7 @@ namespace {
                             launch::request_pick_rom();
 #else
                             g_launch_note = "Choose a ROM first: drop it on the window, or Enter on the ROM row";
-                            reflect_rows(screen);
+                            refresh_rows(screen);
 #endif
                         }
                         break;
@@ -1679,7 +1997,14 @@ namespace {
                 }
                 break;
             case Nav::Back:
-                if (screen == Screen::Settings) {
+                // Lighting is a page of Graphics, Photo and Video pages of Capture (2026-10-13).
+                if (screen == Screen::Lighting) {
+                    show(Screen::Graphics);
+                }
+                else if (screen == Screen::Photo || screen == Screen::Video) {
+                    show(Screen::Capture);
+                }
+                else if (settings_like(screen)) {
                     show(Screen::None);
                 }
                 // Back to where it was opened from: the settings in play, the launcher before.
@@ -1696,8 +2021,10 @@ namespace {
                 // The two screens share the branch rather than getting one each, because they are
                 // the same case (a document opened from the settings) and a third copy of this
                 // line is how the next one gets forgotten in the same way.
-                else if (screen == Screen::Lighting || screen == Screen::Debug || screen == Screen::Hud) {
-                    show(g_game_started ? Screen::Settings : Screen::Launch);
+                else if (screen == Screen::Debug || screen == Screen::Hud) {
+                    // A section's first page (phase 96): Back closes the menu in the game, and
+                    // before Play goes back to Play, as every section's does.
+                    show(Screen::None);
                 }
                 break;
             case Nav::Clear:
@@ -1854,6 +2181,12 @@ namespace {
                 e->SetClass("on", i == g_ffocus);
             }
         }
+        // THE LIST FOLLOWS THE FOCUS (the user, 2026-10-13: "it doesn't scroll down to other
+        // options as i use the controller, instread the selections just continue to move but out
+        // of view"): the list scrolled for the wheel but never for a move.
+        if (g_ffocus < rows) {
+            keep_in_view(g_files_doc->GetElementById("files-rows"), g_files_doc->GetElementById("frow-" + std::to_string(g_ffocus)));
+        }
         if (Rml::Element* e = g_files_doc->GetElementById("files-left")) {
             e->SetClass("on", g_ffocus == rows);
         }
@@ -1898,13 +2231,13 @@ namespace {
         // 2026-09-24: "delete files MUST have a secondary confirmation"). The words change on both
         // buttons and in the foot, and the button lights its edge, so the second press can never
         // be mistaken for the first.
-        set_text(g_files_doc, "files-left-label", g_remove_armed ? "No, keep everything" : "Close");
+        // Uninstalling removes the program and nothing of the person's (install.h, remove_program).
+        set_text(g_files_doc, "files-left-label", g_remove_armed ? "No, keep it" : "Close");
         if (oot::places::mode() == oot::places::Mode::Installed) {
-            set_text(g_files_doc, "files-right-label",
-                     g_remove_armed ? "Yes, remove it all" : "Remove everything");
+            set_text(g_files_doc, "files-right-label", g_remove_armed ? "Yes, uninstall" : "Uninstall");
             set_text(g_files_doc, "files-foot",
                      g_remove_armed
-                         ? "Remove everything this program installed? The Everything folder above is deleted, with the saves and mods in it. Your copy of the game is moved to your Downloads folder first, never deleted"
+                         ? "Uninstall the program? Its Program files folder above is deleted. Your saves and moments, your ROM, texture packs, mods, settings and controls all stay where they are"
                          : "Click a row, or its Open, to open that folder");
         }
         else {
@@ -1948,7 +2281,8 @@ namespace {
                 reflect_files();
             }
             else {
-                show(g_game_started ? Screen::Settings : Screen::Launch);
+                // Your files is a page of the section it was opened from (phase 96).
+                show(section_root_screen());
             }
             return;
         }
@@ -1961,11 +2295,10 @@ namespace {
                 reflect_files();
                 return;
             }
-            const std::string said = oot::install::remove_everything();
+            const std::string said = oot::install::remove_program();
             std::fprintf(stderr, "[install] %s\n", said.c_str());
-            // Nothing is left to run from, so this is the end. The message goes to the log,
-            // which is inside the folder that was just removed, so it also goes to stderr where
-            // a harness run can read it.
+            // Nothing is left to run from, so this is the end. The message goes to the log, which
+            // stays in the data folder with the person's things.
             launch::request_quit();
             return;
         }
@@ -1979,29 +2312,43 @@ namespace {
         }
     }
 
-    // The pad and the keyboard on the files surface: up and down walk the rows and then the two
-    // buttons, Accept opens the focused folder or presses the focused button, Back leaves (and
-    // disarms a removal on the way, so a half pressed destructive button never waits for the next
-    // visit).
+    // The pad and the keyboard on the files surface, BY WHERE THINGS ARE DRAWN (the user,
+    // 2026-10-13: "the buttons at bottom still behave as a list in one column rather than proper
+    // left/right movement like rest of menu"), as the settings list treats its Play and Quit pair:
+    // Up and Down walk the rows and step onto the two buttons as one stop (onto the left one),
+    // Left and Right move between the two, Up from them goes back to the last row, and the ends
+    // wrap as the settings list's do. Accept opens the focused folder or presses the focused
+    // button; Back leaves (and disarms a removal on the way, so a half pressed destructive button
+    // never waits for the next visit).
     void files_nav(Nav nav) {
         const int rows = static_cast<int>(g_file_rows.size());
-        const int count = rows + 2;
+        const int left = rows;        // Close, or No, keep everything
+        const int right = rows + 1;   // Uninstall, or Yes, uninstall
+        const bool on_buttons = g_ffocus >= rows;
         switch (nav) {
             case Nav::Up:
-                g_ffocus = (g_ffocus + count - 1) % count;
+                if (on_buttons) {
+                    g_ffocus = rows > 0 ? rows - 1 : left;
+                } else {
+                    g_ffocus = g_ffocus > 0 ? g_ffocus - 1 : left;
+                }
                 apply_files_focus();
                 break;
             case Nav::Down:
-                g_ffocus = (g_ffocus + 1) % count;
+                if (on_buttons) {
+                    g_ffocus = rows > 0 ? 0 : g_ffocus;
+                } else {
+                    g_ffocus = g_ffocus + 1 < rows ? g_ffocus + 1 : left;
+                }
                 apply_files_focus();
                 break;
             case Nav::Left:
-                g_ffocus = rows;
-                apply_files_focus();
-                break;
             case Nav::Right:
-                g_ffocus = rows + 1;
-                apply_files_focus();
+                // Sideways only within the pair: a row has nothing beside it.
+                if (on_buttons) {
+                    g_ffocus = nav == Nav::Left ? left : right;
+                    apply_files_focus();
+                }
                 break;
             case Nav::Accept:
                 if (g_ffocus < rows) {
@@ -2014,7 +2361,7 @@ namespace {
                 break;
             case Nav::Back:
                 g_remove_armed = false;
-                show(g_game_started ? Screen::Settings : Screen::Launch);
+                show(section_root_screen());
                 break;
             default:
                 break;
@@ -2212,10 +2559,26 @@ namespace {
         return false;
     }
 
+    // Which of a question's two answers has the focus (Left and Right move it): No by default.
+    bool g_ask_yes = false;
+
+    void ask_focus_draw() {
+        if (g_ask_doc == nullptr) {
+            return;
+        }
+        if (Rml::Element* no = g_ask_doc->GetElementById("ask-no")) {
+            no->SetClass("on", !g_ask_yes);
+        }
+        if (Rml::Element* yes = g_ask_doc->GetElementById("ask-yes")) {
+            yes->SetClass("on", g_ask_yes);
+        }
+    }
+
     void reflect_ask() {
         if (g_ask_doc == nullptr) {
             return;
         }
+        ask_focus_draw();
         // A confirmation wins over the first run questions, which only ever run before there is
         // anything else on screen anyway.
         if (g_confirm_open) {
@@ -2230,11 +2593,14 @@ namespace {
         if (g_question == Question::Updates) {
             set_text(g_ask_doc, "ask-title", "Before you start");
             set_text(g_ask_doc, "ask-question", "Should this check for updates?");
+            // What the update check does (updates.cpp), and word for word what the website's install
+            // page shows of this question (ProgramMenu.astro, ASK): change both together.
             set_text(g_ask_doc, "ask-detail",
-                     "Once each time it opens, it would ask the release page whether a newer "
-                     "version exists, and tell you if there is one. That is the only thing this "
-                     "program ever sends over the network, and it is off until you say otherwise. "
-                     "Nothing about you, your machine or your copy of the game is sent.");
+                     "When it opens, and every four hours while it runs, it would ask the release "
+                     "page whether a newer version exists. On an installed copy a newer one "
+                     "downloads in the background and installs the next time it opens. That is the "
+                     "only connection this program ever makes, and it is off until you say "
+                     "otherwise. Nothing about you, your machine or your copy of the game is sent.");
             set_text(g_ask_doc, "ask-no-label", "No, stay offline");
             set_text(g_ask_doc, "ask-yes-label", "Yes, check for updates");
             set_text(g_ask_doc, "ask-foot", "You can change this at any time in the settings");
@@ -2342,6 +2708,19 @@ namespace {
         if (Rml::Element* e = g_about_doc->GetElementById("about-changes")) {
             e->SetInnerRML(g_changes_rml);
         }
+        // THE CREDITS (phase 106): every bundled face and icon set with its license, from the
+        // manifest the build checks, so a file added to the bundle is credited without a line here.
+        if (Rml::Element* e = g_about_doc->GetElementById("about-credits")) {
+            std::ifstream manifest(std::filesystem::path(g_assets_dir) / "licenses" / "MANIFEST.txt", std::ios::binary);
+            std::stringstream text;
+            text << manifest.rdbuf();
+            std::string rml;
+            for (const oot::ui::credits::Credit& c : oot::ui::credits::from_manifest(text.str())) {
+                rml += "<div class=\"field\"><span class=\"datum\">" + escape(oot::ui::credits::describe(c)) + "</span></div>";
+            }
+            rml += "<div class=\"field\"><span class=\"datum\">Everything else drawn here is this program's own, GPL-3.0</span></div>";
+            e->SetInnerRML(rml);
+        }
         size_long_rows(g_about_doc, "about-body", ABOUT_SHARE);
         if (Rml::Element* body = g_about_doc->GetElementById("about-body")) {
             body->SetScrollTop(0.0f);
@@ -2361,7 +2740,7 @@ namespace {
                 const bool on = static_cast<int>(i) == g_bfocus;
                 e->SetClass("on", on);
                 if (on) {
-                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest });
+                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, list_scroll() });
                 }
             }
         }
@@ -2478,6 +2857,169 @@ namespace {
         show(Screen::Launch);
     }
 
+    // ------------------------------------------------------------------------------------------
+    // THE ON-SCREEN KEYBOARD (the menus plan, phase 110): so a pad can type a path in the browser.
+    // A layer over the menu (assets/ui/keyboard.rml) opened with Y on a pad (R on the keys) or the
+    // prompt; its keys are walked by the layout engine (src/ui/nav/), the first surface to move onto
+    // it, and its text is src/ui/keyboard/. Done writes the line into the path field and takes it,
+    // opening a folder or choosing a ROM; physical typing still goes straight to the field.
+    // ------------------------------------------------------------------------------------------
+    Rml::ElementDocument* g_keyboard_doc = nullptr;
+    bool g_kb_open = false;
+    oot::ui::keyboard::Line g_kb_line;
+    int g_kb_focus = -1;
+    oot::ui::nav::Memory g_kb_memory;
+
+    bool g_kb_open_flag() {
+        return g_kb_open;
+    }
+
+    void kb_draw() {
+        // As many characters as the line's box holds: the mono face advances six tenths of its
+        // size, so a long path shows the part at the caret rather than running off the panel.
+        size_t width = 0;
+        if (Rml::Element* line = g_keyboard_doc->GetElementById("kb-line")) {
+            if (Rml::Element* box = line->GetParentNode()) {
+                const float size = box->GetComputedValues().font_size();
+                const float room = box->GetBox().GetSize(Rml::BoxArea::Content).x;
+                if (size > 0.0f && room > 0.0f) {
+                    width = static_cast<size_t>(room / (size * 0.6f));
+                }
+            }
+        }
+        set_text(g_keyboard_doc, "kb-line", width > 0 ? g_kb_line.shown(width) : g_kb_line.shown());
+        if (Rml::Element* shift = g_keyboard_doc->GetElementById("key-3-0")) {
+            shift->SetClass("on", g_kb_line.shift());
+        }
+    }
+
+    void kb_focus(int node, const oot::ui::nav::RmlModel& m) {
+        if (node < 0 || node >= static_cast<int>(m.elements.size())) {
+            return;
+        }
+        for (Rml::Element* e : m.elements) {
+            e->SetClass("is-f", false);
+        }
+        m.elements[static_cast<size_t>(node)]->SetClass("is-f", true);
+        g_kb_focus = node;
+        oot::ui::nav::remember(m.model, g_kb_memory, node);
+    }
+
+    void close_keyboard() {
+        if (!g_kb_open) {
+            return;
+        }
+        g_kb_open = false;
+        if (g_keyboard_doc != nullptr) {
+            g_keyboard_doc->Hide();
+        }
+        refresh_shell();
+    }
+
+    void open_keyboard() {
+        if (g_keyboard_doc == nullptr || g_kb_open) {
+            return;
+        }
+        std::string start;
+        if (Rml::ElementFormControl* input = browse_input()) {
+            start = input->GetValue();
+        }
+        if (start.empty() && !g_browse_dir.empty()) {
+            start = utf8(g_browse_dir);
+            if (start.back() != '\\') {
+                start += '\\';
+            }
+        }
+        g_kb_line = oot::ui::keyboard::Line(start);
+        g_keyboard_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+        g_keyboard_doc->PullToFront();
+        g_kb_open = true;
+        // Laid out now, so the engine has the keys' boxes for the first move.
+        g_context->Update();
+        const oot::ui::nav::RmlModel m = oot::ui::nav::build(g_keyboard_doc);
+        kb_focus(g_kb_focus >= 0 ? g_kb_focus : oot::ui::nav::first_focus(m.model, g_kb_memory), m);
+        kb_draw();
+        refresh_shell();
+        say("keyboard");
+    }
+
+    // The key an element is: its id is its row and column in the keyboard's rows.
+    std::string key_of(Rml::Element* e) {
+        int r = -1;
+        int c = -1;
+        if (e == nullptr || std::sscanf(e->GetId().c_str(), "key-%d-%d", &r, &c) != 2) {
+            return "";
+        }
+        const auto& rows = oot::ui::keyboard::rows();
+        if (r < 0 || r >= static_cast<int>(rows.size()) || c < 0 || c >= static_cast<int>(rows[static_cast<size_t>(r)].size())) {
+            return "";
+        }
+        return rows[static_cast<size_t>(r)][static_cast<size_t>(c)];
+    }
+
+    void kb_press(const std::string& key) {
+        if (key.empty()) {
+            return;
+        }
+        if (g_kb_line.press(key)) {
+            close_keyboard();
+            if (Rml::ElementFormControl* input = browse_input()) {
+                input->SetValue(g_kb_line.text());
+            }
+            const std::filesystem::path path = path_from_text(g_kb_line.text());
+            std::error_code ec;
+            if (!path.empty() && std::filesystem::is_directory(path, ec)) {
+                browse_load(path);
+            }
+            else {
+                use_typed_path();
+            }
+            return;
+        }
+        kb_draw();
+    }
+
+    void keyboard_nav(Nav nav) {
+        namespace nv = oot::ui::nav;
+        const nv::RmlModel m = nv::build(g_keyboard_doc);
+        const auto go = [&](nv::Dir d) {
+            const int next = nv::move(m.model, g_kb_memory, g_kb_focus, d);
+            if (next >= 0) {
+                kb_focus(next, m);
+            }
+        };
+        switch (nav) {
+            case Nav::Up:          go(nv::Dir::Up); break;
+            case Nav::Down:        go(nv::Dir::Down); break;
+            case Nav::Left:        go(nv::Dir::Left); break;
+            case Nav::Right:       go(nv::Dir::Right); break;
+            case Nav::Accept:
+                if (g_kb_focus >= 0 && g_kb_focus < static_cast<int>(m.elements.size())) {
+                    kb_press(key_of(m.elements[static_cast<size_t>(g_kb_focus)]));
+                }
+                break;
+            case Nav::Back:        close_keyboard(); break;
+            case Nav::Clear:       kb_press(oot::ui::keyboard::BACKSPACE); break;
+            case Nav::SectionPrev: g_kb_line.left(); kb_draw(); break;
+            case Nav::SectionNext: g_kb_line.right(); kb_draw(); break;
+            default:               break;
+        }
+    }
+
+    // A click on a key presses it, and the focus goes there too.
+    void click_key(const std::string& id) {
+        if (!g_kb_open || g_keyboard_doc == nullptr) {
+            return;
+        }
+        Rml::Element* e = g_keyboard_doc->GetElementById(id);
+        const oot::ui::nav::RmlModel m = oot::ui::nav::build(g_keyboard_doc);
+        const auto found = m.index.find(e);
+        if (found != m.index.end()) {
+            kb_focus(found->second, m);
+        }
+        kb_press(key_of(e));
+    }
+
     // Whether the field has the focus, for the pump's routing; taken once a frame.
     void poll_text_entry() {
         bool active = false;
@@ -2510,6 +3052,10 @@ namespace {
     void browse_nav(Nav nav) {
         const int count = static_cast<int>(g_browse.size());
         switch (nav) {
+            // Y on a pad, R on the keys: the on-screen keyboard, to type a path (phase 110).
+            case Nav::Default:
+                open_keyboard();
+                break;
             case Nav::Up:
                 if (count > 0) {
                     g_bfocus = (g_bfocus + count - 1) % count;
@@ -2571,7 +3117,7 @@ namespace {
             if (Rml::Element* e = g_controls_doc->GetElementById("crow-" + n)) {
                 e->SetClass("on", i == g_cfocus);
                 if (i == g_cfocus) {
-                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest });
+                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, list_scroll() });
                 }
             }
             for (int s = 0; s < oot::input::BINDINGS_PER_INPUT; ++s) {
@@ -2779,6 +3325,8 @@ namespace {
         const controls::Row r = controls::row(g_cfocus);
 
         switch (nav) {
+            case Nav::Default: case Nav::SectionPrev: case Nav::SectionNext:
+                return;   // the shell's (phase 96); these older screens have none
             case Nav::Up:
                 g_cfocus = (g_cfocus + count - 1) % count;
                 apply_controls_focus();
@@ -2836,9 +3384,17 @@ namespace {
 
     void click_row(Screen screen, int row) {
         switch (screen) {
+            // THE BASELINE'S SECOND DEFECT: Debugging had no case here, so a click on a row's body
+            // did nothing and only its arrows worked. Its rows are built like the others'.
             case Screen::Settings:
+            case Screen::Graphics:
+            case Screen::Gameplay:
+            case Screen::Capture:
+            case Screen::Photo:
+            case Screen::Video:
             case Screen::Lighting:
             case Screen::Hud:
+            case Screen::Debug:
             case Screen::Launch: {
                 const int count = static_cast<int>(rows_for(screen).size());
                 if (row < 0 || row >= count) {
@@ -3005,6 +3561,20 @@ namespace {
                 e->SetClass("hidden", !edge);
             }
         }
+        // The document is shown only while the bar or the edge is, because being shown is what keeps
+        // the interface layer drawing (showing()). Fullscreen with the bar up and gone again leaves
+        // nothing of it on screen, and it must not keep the layer drawing for nothing. Both parts
+        // hide at once (display: none), so hiding the document with them looks the same.
+        const bool up = header || edge;
+        if (up != g_frame_doc->IsVisible()) {
+            if (up) {
+                g_frame_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+                g_frame_doc->PushToBack();
+            }
+            else {
+                g_frame_doc->Hide();
+            }
+        }
     }
 
     // The frame rate counter (the user's ask of 2026-09-19): the frames the render hook is
@@ -3098,10 +3668,6 @@ namespace {
                 std::fprintf(stderr, "[ui] counter %d fps\n", fps);
             }
         }
-    }
-
-    bool frame_wants_draw() {
-        return g_frame_shown && (g_header_shown || g_edge_shown);
     }
 
     // Is the pointer on the recorder's plate, wherever the plate currently is? Asked of RmlUi
@@ -3262,7 +3828,7 @@ namespace {
             if (Rml::Element* e = g_warps_doc->GetElementById("wrow-" + std::to_string(i))) {
                 e->SetClass("on", i == g_wfocus);
                 if (i == g_wfocus) {
-                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest });
+                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, list_scroll() });
                 }
             }
         }
@@ -3281,8 +3847,11 @@ namespace {
     // ------------------------------------------------------------------------------------------
 
     // An element id cannot carry a minus sign comfortably, so the autosaves are "a0" to "a4"
-    // (newest first) and the player's slots keep their own numbers.
+    // (newest first), the reserved "r1" to "r20", and the player's slots keep their own numbers.
     std::string moment_row_id(int slot) {
+        if (oot::moments::is_reserved(slot)) {
+            return "r" + std::to_string(slot - oot::moments::RESERVED_FIRST + 1);
+        }
         return oot::moments::is_autosave(slot)
             ? ("a" + std::to_string(oot::moments::AUTOSAVE_SLOT - slot))
             : std::to_string(slot);
@@ -3292,10 +3861,16 @@ namespace {
         if (!id.empty() && id[0] == 'a') {
             return oot::moments::AUTOSAVE_SLOT - std::atoi(id.c_str() + 1);
         }
+        if (!id.empty() && id[0] == 'r') {
+            return oot::moments::RESERVED_FIRST + std::atoi(id.c_str() + 1) - 1;
+        }
         return std::atoi(id.c_str());
     }
 
     std::string moment_slot_name(int slot) {
+        if (oot::moments::is_reserved(slot)) {
+            return "Reserved " + std::to_string(slot - oot::moments::RESERVED_FIRST + 1);
+        }
         if (!oot::moments::is_autosave(slot)) {
             return "Slot " + std::to_string(slot);
         }
@@ -3303,16 +3878,37 @@ namespace {
         return age == 0 ? std::string("Autosave, the newest") : ("Autosave, " + std::to_string(age + 1) + " back");
     }
 
+    // Whether the reserve button can move the chosen moment: into the reserved while fewer than
+    // twenty hold one, or out of them while one of your eight is empty.
+    bool moment_can_move() {
+        if (!moment_present(g_mfocus)) {
+            return false;
+        }
+        if (!oot::moments::is_reserved(g_mfocus)) {
+            return oot::moments::reserved_count() < oot::moments::RESERVED_COUNT;
+        }
+        for (int slot = 1; slot <= oot::moments::SLOT_COUNT; ++slot) {
+            if (!moment_present(slot)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // WHICH BUTTONS THIS STATE OFFERS, in the order they sit on screen. Cancel is always there,
     // because the user asked for a way out from the buttons themselves; Delete and Resume need a
     // file; Save here needs the game running and never writes over an autosave, which the
-    // autosave owns.
+    // autosave owns, or a reserved moment, which nothing writes over; the reserve button needs a
+    // file and somewhere to move it.
     std::vector<std::string> moment_buttons() {
         std::vector<std::string> ids;
         if (moment_present(g_mfocus)) {
             ids.push_back("moments-delete");
         }
-        if (g_game_started && !oot::moments::is_autosave(g_mfocus)) {
+        if (moment_can_move()) {
+            ids.push_back("moments-reserve");
+        }
+        if (g_game_started && !oot::moments::is_autosave(g_mfocus) && !oot::moments::is_reserved(g_mfocus)) {
             ids.push_back("moments-save");
         }
         if (moment_present(g_mfocus)) {
@@ -3334,7 +3930,7 @@ namespace {
                 e->SetClass("cursor", (slot == g_mfocus) && (g_mzone == MomentZone::Rows));
                 if (slot == g_mfocus) {
                     e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest,
-                                                                  Rml::ScrollAlignment::Nearest });
+                                                                  Rml::ScrollAlignment::Nearest, list_scroll() });
                 }
             }
         }
@@ -3343,7 +3939,7 @@ namespace {
         if (g_mbutton < 0 || g_mbutton >= static_cast<int>(buttons.size())) {
             g_mbutton = static_cast<int>(buttons.size()) - 1;   // Cancel, which is always offered
         }
-        for (const char* id : { "moments-delete", "moments-save", "moments-load", "moments-cancel" }) {
+        for (const char* id : { "moments-delete", "moments-reserve", "moments-save", "moments-load", "moments-cancel" }) {
             if (Rml::Element* e = g_moments_doc->GetElementById(id)) {
                 const bool offered = std::find(buttons.begin(), buttons.end(), std::string(id)) != buttons.end();
                 e->SetClass("off", !offered);
@@ -3354,8 +3950,16 @@ namespace {
         // The buttons say what they will do to THIS slot. Save here is the game's alone (the
         // launcher has no frame to keep) and never the autosave's; Resume and Delete need a file.
         const bool present = moment_present(g_mfocus);
+        const bool reserved = oot::moments::is_reserved(g_mfocus);
         set_text(g_moments_doc, "moments-save-label",
-                 !g_game_started ? "Save in play" : (oot::moments::is_autosave(g_mfocus) ? "The autosave's own" : (present ? "Save over" : "Save here")));
+                 reserved ? "Reserved, kept as it is"
+                 : !g_game_started ? "Save in play"
+                 : (oot::moments::is_autosave(g_mfocus) ? "The autosave's own" : (present ? "Save over" : "Save here")));
+        // The reserve button says where the moment would go, and why it cannot when it cannot.
+        set_text(g_moments_doc, "moments-reserve-label",
+                 reserved ? (moment_can_move() ? "Unreserve" : "Your slots are full")
+                 : (present && !moment_can_move()) ? "Reserved is full"
+                 : "Mark as reserved");
         set_text(g_moments_doc, "moments-load-label", present ? "Load" : "Nothing here");
         set_text(g_moments_doc, "moments-delete-label", present ? (g_moment_delete_armed ? "Yes, delete it" : "Delete") : "Empty");
         if (Rml::Element* e = g_moments_doc->GetElementById("moments-delete")) {
@@ -3373,12 +3977,22 @@ namespace {
         }
         std::string rml;
         bool divided = false;
-        for (int slot : moment_order()) {
+        bool divided_reserved = false;
+        const std::vector<int> order = moment_order();
+        for (int slot : order) {
             // THE DIVIDER the user asked for, once, where the autosaves end and their own slots
             // begin. It is not a row: nothing focuses it and nothing can be done to it.
             if (!divided && !oot::moments::is_autosave(slot)) {
                 divided = true;
                 rml += "<div class=\"divider\"><span class=\"divider-label\">Your slots</span></div>";
+            }
+            // And the reserved's, with how many of the twenty are taken.
+            if (!divided_reserved && oot::moments::is_reserved(slot)) {
+                divided_reserved = true;
+                const int taken = static_cast<int>(std::count_if(order.begin(), order.end(),
+                                                                 [](int s) { return oot::moments::is_reserved(s); }));
+                rml += "<div class=\"divider\"><span class=\"divider-label\">Reserved, " + std::to_string(taken) + " of " +
+                       std::to_string(oot::moments::RESERVED_COUNT) + "</span></div>";
             }
             oot::moments::Header header{};
             std::vector<uint32_t> save_words;
@@ -3392,18 +4006,42 @@ namespace {
 
             rml += "<div class=\"row mrow\" id=\"mrow-" + moment_row_id(slot) + "\">";
             const std::filesystem::path thumb = oot::moments::slot_file(slot, ".rgba");
+            // A moment from before the raw picture was written beside its PNG has only the PNG,
+            // which this interface cannot draw: the raw one is made from it once, here.
+            if (ok && !std::filesystem::is_regular_file(thumb, ec)) {
+                const std::filesystem::path png = oot::moments::slot_file(slot, ".png");
+                if (std::filesystem::is_regular_file(png, ec) && oot::recorder::raw_from_png(png)) {
+                    std::fprintf(stderr, "[ui] moment %d's picture made from its PNG\n", slot);
+                }
+            }
             if (ok && std::filesystem::is_regular_file(thumb, ec)) {
                 // Forward slashes, because the document's own path is joined in front otherwise.
                 std::string src = thumb.string();
                 for (char& c : src) { if (c == '\\') c = '/'; }
+                // AND ITS VERSION, its time and size, so a picture written again under the same
+                // name (a slot saved over, the autosaves stepping back, a moment reserved and
+                // another saved where it was) is a new picture to the interface's cache, which
+                // otherwise keeps the first one it loaded under a name, or a failed load, for good.
+                const auto stamp = std::filesystem::last_write_time(thumb, ec).time_since_epoch().count();
+                src += "?v=" + std::to_string(stamp) + "-" + std::to_string(std::filesystem::file_size(thumb, ec));
                 rml += "<img class=\"thumb\" src=\"" + escape(src) + "\"/>";
             }
             else {
                 rml += "<div class=\"thumb empty\"></div>";
             }
             rml += "<span class=\"label\">";
+            // WHERE IT WAS TAKEN, BY NAME (the user, 2026-10-13: "a user friendly location along with
+            // it: Fire Temple, Forest Temple, Inside Jabu-Jabu, Lake Hylia, Temple of Time, Mask Shop").
+            // New moments are named for their place when taken; an older one still named "Scene 52 at
+            // 12:00" is shown by its place the same way, from the entrance it kept.
+            const oot::warps::Named where = ok ? oot::warps::place_of(static_cast<int>(header.entrance)) : oot::warps::Named{};
+            std::string title = ok ? std::string(header.name) : std::string();
+            const std::string old_name = "Scene " + std::to_string(header.scene);
+            if (ok && where.place != nullptr && title.compare(0, old_name.size(), old_name) == 0) {
+                title = std::string(where.place) + title.substr(old_name.size());
+            }
             if (ok) {
-                rml += escape(std::string(header.name)) + "<span class=\"slot\">" + escape(moment_slot_name(slot)) + "</span>";
+                rml += escape(title) + "<span class=\"slot\">" + escape(moment_slot_name(slot)) + "</span>";
             }
             else if (exists) {
                 rml += escape(moment_slot_name(slot)) + "<span class=\"slot\">" + escape(why) + "</span>";
@@ -3420,14 +4058,26 @@ namespace {
                 std::tm tm{};
                 localtime_s(&tm, &t);
                 std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", &tm);
-                rml += escape(std::string("Scene ") + std::to_string(header.scene) + " \xC2\xB7 " + when);
+                // The region the place sits in, beside the date; the scene's number where the
+                // catalog has no place for it.
+                const std::string area = (where.region != nullptr) ? std::string(where.region)
+                                                                   : (std::string("Scene ") + std::to_string(header.scene));
+                rml += escape(area + " \xC2\xB7 " + when);
             }
             rml += "</span></div>";
         }
         replace_rows(g_moments_doc, rows, rml,
                      [&]() { cap_long_rows(g_moments_doc, "moment-rows", rows_cap(Screen::Moments)); });
-        if (!oot::moments::slot_exists(g_mfocus)) {
-            g_mfocus = oot::moments::AUTOSAVE_SLOT;
+        if (std::find(order.begin(), order.end(), g_mfocus) == order.end()) {
+            // A reserved moment deleted or moved out takes its row with it: the choice goes to the
+            // row just above where it was, the last of your slots when it was the first reserved.
+            int above = oot::moments::SLOT_COUNT;
+            for (int slot : order) {
+                if (oot::moments::is_reserved(slot) && slot < g_mfocus) {
+                    above = slot;
+                }
+            }
+            g_mfocus = oot::moments::is_reserved(g_mfocus) ? above : oot::moments::AUTOSAVE_SLOT;
         }
         apply_moments_focus();
     }
@@ -3435,7 +4085,8 @@ namespace {
     void moments_leave() {
         g_moment_delete_armed = false;
         g_mzone = MomentZone::Rows;
-        show(g_game_started ? Screen::Settings : Screen::Launch);
+        // Moments is a section of its own (phase 96): leaving it closes the menu in the game.
+        show(Screen::None);
     }
 
     void moments_save_here() {
@@ -3468,6 +4119,41 @@ namespace {
         }
     }
 
+    // MARK AS RESERVED, AND BACK (the user, 2026-10-13). The moment moves, and the choice and the
+    // cursor go with it, so the button under the cursor now reads Unreserve and a second press puts
+    // it back. A move the list did not allow (another window filled the last place) says so.
+    void moments_reserve() {
+        if (!moment_present(g_mfocus)) {
+            return;
+        }
+        const bool out = oot::moments::is_reserved(g_mfocus);
+        int to = oot::moments::NO_SLOT;
+        const oot::moments::Move moved = out ? oot::moments::unreserve(g_mfocus, to) : oot::moments::reserve(g_mfocus, to);
+        g_moment_delete_armed = false;
+        switch (moved) {
+            case oot::moments::Move::Done:
+                g_mfocus = to;
+                oot::moments::notice(out ? "Back in your slots" : "Reserved: nothing will write over it");
+                break;
+            case oot::moments::Move::NoRoom:
+                oot::moments::notice(out ? "Your slots are full: delete one first"
+                                         : "All 20 reserved are taken: delete or unreserve one first");
+                break;
+            case oot::moments::Move::NothingThere:
+            case oot::moments::Move::Failed:
+                oot::moments::notice("The moment could not be moved");
+                break;
+        }
+        reflect_moments();
+        // The cursor stays on the reserve button where it is still offered, so a second press undoes it.
+        const std::vector<std::string> buttons = moment_buttons();
+        const auto at = std::find(buttons.begin(), buttons.end(), std::string("moments-reserve"));
+        if (at != buttons.end()) {
+            g_mbutton = static_cast<int>(at - buttons.begin());
+            apply_moments_focus();
+        }
+    }
+
     void moments_delete() {
         if (!moment_present(g_mfocus)) {
             return;
@@ -3497,6 +4183,9 @@ namespace {
         }
         else if (id == "moments-delete") {
             moments_delete();
+        }
+        else if (id == "moments-reserve") {
+            moments_reserve();
         }
         else if (id == "moments-cancel") {
             moments_leave();
@@ -3541,6 +4230,52 @@ namespace {
         moments_press(id);
     }
 
+    // WHERE EACH BUTTON SITS (moments.rml, .actions.pairs, two to a row): Delete and Mark as
+    // reserved on the top row, Save over and Load in the middle, Cancel alone across the bottom. A
+    // button not offered keeps its place on screen.
+    void moment_button_cell(const std::string& id, int& row, int& col) {
+        row = (id == "moments-cancel") ? 2 : (id == "moments-save" || id == "moments-load") ? 1 : 0;
+        col = (id == "moments-reserve" || id == "moments-load") ? 1 : 0;
+    }
+
+    // THE BUTTON IN A DIRECTION, BY WHERE THE BUTTONS ARE DRAWN (the user, 2026-10-12: "if i select
+    // one, then Load is the focused button. so then pushing up on left stick SHOULD land on Delete, but
+    // instead it unselects. same for if i press Right to select/focus the cancel button and then press
+    // up to select save over, it doesn't move the focus to the save over button"). A row up or down
+    // keeps the column where that button is offered and otherwise takes the other one of that row; left
+    // and right cross to the other button of the same row. The index into `buttons`, or -1 when nothing
+    // offered lies that way.
+    int moment_button_toward(const std::vector<std::string>& buttons, int drow, int dcol) {
+        const int count = static_cast<int>(buttons.size());
+        if (g_mbutton < 0 || g_mbutton >= count) {
+            return -1;
+        }
+        int row = 0;
+        int col = 0;
+        moment_button_cell(buttons[static_cast<size_t>(g_mbutton)], row, col);
+        const int want_row = row + drow;
+        const int want_col = col + dcol;
+        if (want_row < 0 || want_row > 2 || want_col < 0 || want_col > 1) {
+            return -1;
+        }
+        int other_in_row = -1;
+        for (int i = 0; i < count; ++i) {
+            int r = 0;
+            int c = 0;
+            moment_button_cell(buttons[static_cast<size_t>(i)], r, c);
+            if (r != want_row) {
+                continue;
+            }
+            if (c == want_col) {
+                return i;
+            }
+            if (drow != 0) {
+                other_in_row = i;
+            }
+        }
+        return other_in_row;
+    }
+
     void moments_nav(Nav nav) {
         const std::vector<int> order = moment_order();
         const std::vector<std::string> buttons = moment_buttons();
@@ -3549,11 +4284,19 @@ namespace {
         const int at = (here != order.end()) ? static_cast<int>(here - order.begin()) : 0;
 
         switch (nav) {
-            // IN THE ROWS, up and down walk the list. ON THE BUTTONS, up returns to the rows and
-            // down does nothing, so the two zones cannot be left by accident.
+            // IN THE ROWS, up and down walk the list. ON THE BUTTONS the cursor moves through the
+            // grid as it is drawn (moment_button_toward): up from the lower pair to the button above
+            // it, up from the upper pair back to the list; down the other way, and no further than
+            // the lower pair, so the buttons cannot be left downward by accident.
             case Nav::Up:
                 if (g_mzone == MomentZone::Buttons) {
-                    g_mzone = MomentZone::Rows;
+                    const int above = moment_button_toward(buttons, -1, 0);
+                    if (above >= 0) {
+                        g_mbutton = above;
+                    }
+                    else {
+                        g_mzone = MomentZone::Rows;
+                    }
                 }
                 else {
                     g_mfocus = order[static_cast<size_t>((at + count - 1) % count)];
@@ -3565,16 +4308,26 @@ namespace {
                 if (g_mzone == MomentZone::Rows) {
                     g_mfocus = order[static_cast<size_t>((at + 1) % count)];
                 }
+                else {
+                    const int below = moment_button_toward(buttons, 1, 0);
+                    if (below >= 0) {
+                        g_mbutton = below;
+                    }
+                }
                 g_moment_delete_armed = false;
                 apply_moments_focus();
                 break;
-            // Left and right walk the buttons, and do nothing in the rows: a row has no sideways.
+            // Left and right cross to the other button of the same pair, and do nothing in the rows:
+            // a row has no sideways.
             case Nav::Left:
             case Nav::Right:
-                if ((g_mzone == MomentZone::Buttons) && !buttons.empty()) {
-                    const int step = (nav == Nav::Right) ? 1 : static_cast<int>(buttons.size()) - 1;
-                    g_mbutton = (g_mbutton + step) % static_cast<int>(buttons.size());
-                    apply_moments_focus();
+                if (g_mzone == MomentZone::Buttons) {
+                    const int beside = moment_button_toward(buttons, 0, (nav == Nav::Right) ? 1 : -1);
+                    if (beside >= 0) {
+                        g_mbutton = beside;
+                        g_moment_delete_armed = false;
+                        apply_moments_focus();
+                    }
                 }
                 break;
             // The one press the user asked for: on a row it chooses and drops to the buttons, on
@@ -3734,7 +4487,7 @@ namespace {
         const int count = warps_row_total();
         if (count <= 0) {
             if (nav == Nav::Back) {
-                show(Screen::Settings);
+                show(Screen::Debug);   // Warps is a page of Debugging (phase 96)
             }
             return;
         }
@@ -3742,6 +4495,8 @@ namespace {
             g_wfocus = 0;
         }
         switch (nav) {
+            case Nav::Default: case Nav::SectionPrev: case Nav::SectionNext:
+                return;   // the shell's (phase 96); these older screens have none
             // The remembered focus is the WARP list's, so the time row does not write to it: a
             // -1 stored there would be clamped back to the first region and lose the place the
             // person was at before they reached up to change the clock.
@@ -3786,7 +4541,7 @@ namespace {
                     reflect_warps();
                 }
                 else {
-                    show(Screen::Settings);
+                    show(Screen::Debug);   // Warps is a page of Debugging (phase 96)
                 }
                 break;
             case Nav::Clear:
@@ -3994,6 +4749,11 @@ namespace {
             case Screen::Ask:      return "ask";
             case Screen::Debug:    return "debug";
             case Screen::Hud:      return "hud";
+            case Screen::Graphics: return "graphics";
+            case Screen::Gameplay: return "gameplay";
+            case Screen::Capture:  return "capture";
+            case Screen::Photo:    return "photo";
+            case Screen::Video:    return "video";
             default:               return "none";
         }
     }
@@ -4029,12 +4789,617 @@ namespace {
                      oot::ui::render::device_name().c_str());
     }
 
+    // ------------------------------------------------------------------------------------------
+    // THE ONE MENU (the menus plan, phase 96)
+    //
+    // shell.rml draws what is around the page: the head with the logo, the dial of sections, the
+    // current one's name, the prompts and the held badge. The router (src/ui/shell/shell.h)
+    // decides which section is up and what Back does; every screen of the old interface is a
+    // section, a page inside one, or a layer over one, and its document is laid into the box the
+    // shell leaves for the page (place_page) until the section moves into the shell itself.
+    // ------------------------------------------------------------------------------------------
+    namespace menu = oot::ui::menu;
+    namespace shell_model = oot::ui::shell_model;
+    using Device = oot::ui::input::Device;
+
+    Rml::ElementDocument* g_shell_doc = nullptr;
+    menu::Router g_router{ menu::Mode::Launcher };
+    // The screen whose page is in the box: the screen itself, or, while a dialog is up, the page
+    // the dialog was raised over.
+    Screen g_page = Screen::None;
+    // The page's box as last applied, so a page document is moved only when the box moves.
+    Rml::Vector2f g_host_at{ -1.0f, -1.0f };
+    Rml::Vector2f g_host_size{ -1.0f, -1.0f };
+    Rml::ElementDocument* g_host_doc = nullptr;
+    Device g_prompt_device = Device::Keyboard;
+
+    struct SectionInfo {
+        menu::Section section;
+        const char* id;
+        const char* name;
+        const char* glyph;   // an icon under assets/icons/
+        Screen screen;       // the section's own page
+    };
+    constexpr SectionInfo SECTIONS[] = {
+        { menu::Section::Play,      "play",      "Play",      "play",      Screen::Launch },
+        { menu::Section::Settings,  "settings",  "Settings",  "settings",  Screen::Settings },
+        { menu::Section::Graphics,  "graphics",  "Graphics",  "monitor",   Screen::Graphics },
+        { menu::Section::Gameplay,  "gameplay",  "Gameplay",  "sliders-horizontal", Screen::Gameplay },
+        { menu::Section::Hud,       "hud",       "HUD",       "layers",    Screen::Hud },
+        { menu::Section::Controls,  "controls",  "Controls",  "gamepad-2", Screen::Controls },
+        { menu::Section::Capture,   "capture",   "Capture",   "video",     Screen::Capture },
+        { menu::Section::Moments,   "moments",   "Moments",   "aperture",  Screen::Moments },
+        { menu::Section::Debugging, "debugging", "Debugging", "bug",       Screen::Debug },
+        { menu::Section::About,     "about",     "About",     "info",      Screen::About },
+    };
+
+    const SectionInfo& info_of(menu::Section section) {
+        for (const SectionInfo& s : SECTIONS) {
+            if (s.section == section) {
+                return s;
+            }
+        }
+        return SECTIONS[1];
+    }
+
+    Screen section_root_screen() {
+        return info_of(g_router.section()).screen;
+    }
+
+    // The section a screen belongs to, and the page it is inside it. Browse is the Play section's
+    // ROM browser and Warps the Debugging section's; Your files belongs to whichever section it was
+    // opened from. False for the screens that are not pages (None, a dialog).
+    bool section_of(Screen screen, menu::Section& section, menu::Page& page) {
+        page = menu::Page::Root;
+        switch (screen) {
+            case Screen::Browse:
+                section = menu::Section::Play;
+                page = menu::Page::Browse;
+                return true;
+            case Screen::Warps:
+                section = menu::Section::Debugging;
+                page = menu::Page::Warps;
+                return true;
+            case Screen::Lighting:
+                section = menu::Section::Graphics;
+                page = menu::Page::Lighting;
+                return true;
+            case Screen::Photo:
+                section = menu::Section::Capture;
+                page = menu::Page::Photo;
+                return true;
+            case Screen::Video:
+                section = menu::Section::Capture;
+                page = menu::Page::Video;
+                return true;
+            case Screen::Files:
+                section = g_router.open() ? g_router.section() : menu::Section::Settings;
+                page = menu::Page::Files;
+                return true;
+            case Screen::None:
+            case Screen::Ask:
+                return false;
+            default:
+                for (const SectionInfo& s : SECTIONS) {
+                    if (s.screen == screen) {
+                        section = s.section;
+                        return true;
+                    }
+                }
+                return false;
+        }
+    }
+
+    // The document that is a screen's page.
+    Rml::ElementDocument* page_doc(Screen screen) {
+        switch (screen) {
+            case Screen::Launch:   return g_launch_doc;
+            case Screen::Browse:   return g_browse_doc;
+            case Screen::Files:    return g_files_doc;
+            case Screen::Warps:    return g_warps_doc;
+            case Screen::Settings:
+            case Screen::Graphics:
+            case Screen::Gameplay:
+            case Screen::Capture:
+            case Screen::Photo:
+            case Screen::Video:    return g_settings_doc;
+            case Screen::Lighting: return g_lighting_doc;
+            case Screen::Hud:      return g_hud_doc;
+            case Screen::Debug:    return g_debug_doc;
+            case Screen::Controls: return g_controls_doc;
+            case Screen::Moments:  return g_moments_doc;
+            case Screen::About:    return g_about_doc;
+            default:               return nullptr;
+        }
+    }
+
+    // THE PROMPTS FOLLOW THE DEVICE IN USE (the user, 2026-10-12 21:37: "must detect in real time
+    // so if I switch mid menu navigation, it switched the UI to show the proper controls"): the
+    // device of the last input, read every frame, and nothing for the mouse, which needs none.
+    // Face buttons carry their controllers' pastels (the user, 23:35); the shoulders and keys are
+    // words on plates.
+    // Whether the focused element is a value that Left and Right change: a stepped setting, a
+    // lighting row, the time of day or a room's piece, on the pages built from the rows (phase 109).
+    bool focused_is_value() {
+        if (!settings_like(g_screen) && g_screen != Screen::Lighting && g_screen != Screen::Hud &&
+            g_screen != Screen::Debug) {
+            return false;
+        }
+        const std::vector<RowSpec>& specs = rows_for(g_screen);
+        if (g_focus < 0 || g_focus >= static_cast<int>(specs.size())) {
+            return false;
+        }
+        const RowSpec& spec = specs[static_cast<size_t>(g_focus)];
+        return spec.kind == RowKind::Lighting || spec.kind == RowKind::TimeOfDay || spec.kind == RowKind::Piece ||
+               (spec.kind == RowKind::Setting && !is_check_setting(spec.setting));
+    }
+
+    // A key's name as SDL gives it, for a prompt's plate.
+    std::string key_name_of(int code) {
+        const char* name = SDL_GetScancodeName(static_cast<SDL_Scancode>(code));
+        return std::string(name != nullptr ? name : "");
+    }
+
+    const oot::input::InputBindings& pad_bindings_in_use(const oot::input::Bindings& all);
+    int pad_slot_in_use();
+
+    // A NOTE NAMES THE BINDING IN FORCE (the user, 2026-10-13, a standing rule: a description "goes
+    // along with" the behavior, and it names what a control is bound to now, never a fixed default).
+    // Each "{bind:<input>}" in a note (the input's key in input_bindings, "photo_mode") becomes that
+    // control's working keys and, with a pad connected, its working pad buttons, read from the live
+    // bindings as the rows are drawn: "F10, or Left stick press on the pad". Nothing bound says so.
+    std::string with_bindings(const std::string& note) {
+        namespace pg = oot::ui::prompts::photo_guide;
+        namespace dev = oot::input::devices;
+        std::string out;
+        size_t at = 0;
+        const std::shared_ptr<const oot::input::Bindings> all = oot::input::live();
+        while (true) {
+            const size_t open = note.find("{bind:", at);
+            if (open == std::string::npos) {
+                out += note.substr(at);
+                return out;
+            }
+            const size_t close = note.find('}', open);
+            if (close == std::string::npos) {
+                out += note.substr(at);
+                return out;
+            }
+            out += note.substr(at, open - at);
+            at = close + 1;
+            oot::input::GameInput input;
+            if (!oot::input::input_from_key(note.substr(open + 6, close - open - 6), input)) {
+                continue;
+            }
+            const auto words = [&](const oot::input::InputBindings& bound, int pad_slot) {
+                const pg::Lookup lookup = [&bound](oot::input::GameInput i) { return bound[static_cast<size_t>(i)]; };
+                std::string joined;
+                for (const oot::input::Field& f : pg::working(lookup, input)) {
+                    joined += (joined.empty() ? "" : " or ") + dev::field_name(f, pad_slot);
+                }
+                return joined;
+            };
+            std::string said = words(all->keyboard, -1);
+            if (const int slot = pad_slot_in_use(); slot >= 0) {
+                const std::string pad = words(pad_bindings_in_use(*all), slot);
+                if (!pad.empty()) {
+                    said += (said.empty() ? "" : ", or ") + pad + " on the pad";
+                }
+            }
+            out += said.empty() ? std::string("unbound; bind it in Controls") : said;
+        }
+    }
+
+    // THE DIAL'S PAIR SITS AT THE DIAL'S TOP CORNERS (the user, 2026-10-22: "up in the top end, top
+    // left and top right of the menu itself, above the little rotating medallions ... so that the
+    // user can accurately see that those are the buttons that are used to move those specific
+    // areas"), wherever there is a dial: not on the rail (the centered placement, which lists the
+    // sections down its side and has no arc to stand over), and not while the on-screen keyboard is
+    // up, when the same buttons move the caret and the footer says so.
+    bool dial_pair_pinned() {
+        return menu::placement_for(g_router.mode(), oot::ui::settings().menu_side) != menu::Placement::Centered &&
+               !g_kb_open_flag();
+    }
+
+    std::vector<shell_model::Prompt> dial_pins_for(Device device) {
+        std::vector<shell_model::Prompt> out;
+        if (!dial_pair_pinned()) {
+            return out;
+        }
+        for (const oot::ui::prompts::Prompt& p : oot::ui::prompts::dial_pair(oot::ui::prompts::family_of(device))) {
+            out.push_back({ p.glyph.kind, p.glyph.key, p.glyph.shape, p.glyph.tint, p.label, p.action });
+        }
+        return out;
+    }
+
+    // THE PROMPTS FOLLOW THE DEVICE IN USE (phase 109, src/ui/prompts/): the family of the last
+    // input's device, read every frame, and what the focused element and its place allow.
+    std::vector<shell_model::Prompt> prompts_for(Device device) {
+        namespace pr = oot::ui::prompts;
+        pr::Here here;
+        here.back = g_router.mode() == menu::Mode::Game || g_router.depth() > 0 || g_screen == Screen::Ask;
+        here.change = focused_is_value();
+        here.close = g_router.mode() == menu::Mode::Game && g_router.open();
+        here.typing = g_kb_open_flag();
+        here.type_path = g_screen == Screen::Browse && !here.typing;
+        here.dial_pinned = dial_pair_pinned();
+        std::vector<shell_model::Prompt> out;
+        const pr::Family family = pr::family_of(device);
+        for (pr::Prompt p : pr::footer(family, here)) {
+            // CLOSE IS THE MENU BINDING IN FORCE (the user, 2026-10-13: "mine says options but i have
+            // it set to my touch pad"). The menu opens and closes on the Menu binding (the key path
+            // and handle_pad_edges in boot.cpp), so its prompt is drawn from what the device in use
+            // has bound now, read every frame, so a rebind shows at once. A pad with nothing bound
+            // has no button to name, so no prompt; on the keys F1 always opens the menu too.
+            // Both, when both are bound (the user: "show both of them but only in the event that both
+            // of them actually work"): Menu is acted on first, so every Menu binding works here.
+            if (p.action == "close") {
+                const std::shared_ptr<const oot::input::Bindings> all = oot::input::live();
+                const bool keys = family == pr::Family::Keyboard;
+                const oot::input::InputBindings& bound = keys ? all->keyboard : pad_bindings_in_use(*all);
+                const pr::photo_guide::Lookup lookup = [&bound](oot::input::GameInput input) {
+                    return bound[static_cast<size_t>(input)];
+                };
+                const std::vector<pr::Glyph> glyphs =
+                    pr::photo_guide::working_glyphs(family, lookup, oot::input::GameInput::Menu, key_name_of);
+                if (glyphs.empty() && !keys) {
+                    continue;
+                }
+                for (size_t i = 0; i + 1 < glyphs.size(); ++i) {
+                    out.push_back({ glyphs[i].kind, glyphs[i].key, glyphs[i].shape, glyphs[i].tint, "", "close-also" });
+                }
+                if (!glyphs.empty()) {
+                    p.glyph = glyphs.back();
+                }
+            }
+            out.push_back({ p.glyph.kind, p.glyph.key, p.glyph.shape, p.glyph.tint, p.label, p.action });
+        }
+        return out;
+    }
+
+    // The router's answer, written into the shell's model, and the shell shown or hidden with it.
+    // MOTION (the menus plan, phase 114): nothing in the menus jumps. A page eases in when it
+    // changes, the menu eases in as it opens over the game and out as it closes, each over the
+    // motion tokens' durations with the easing token's curve (quartic in and out). A document
+    // fading out stays shown until its fade ends, then is hidden and put back to full opacity.
+    //
+    // A FADING DOCUMENT CARRIES is-fading, because RmlUi's opacity is inherited rather than
+    // multiplied: an element with an opacity of its own (the medallion's glint, animated to 0.85)
+    // ignores its document's fade and stood out bright over a panel that was going. The class
+    // hides it for the fade's length (medallion.rcss).
+    struct Fading {
+        Rml::ElementDocument* doc;
+        std::chrono::steady_clock::time_point until;
+        bool out;
+    };
+    std::vector<Fading> g_fading;
+
+    const Rml::Tween EASE{ Rml::Tween::Quartic, Rml::Tween::InOut };
+
+    void stop_fading(Rml::ElementDocument* doc) {
+        g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [doc](const Fading& f) { return f.doc == doc; }),
+                       g_fading.end());
+    }
+
+    void fade_in(Rml::ElementDocument* doc, float seconds) {
+        if (doc == nullptr) {
+            return;
+        }
+        stop_fading(doc);
+        const Rml::Property from(0.0f, Rml::Unit::NUMBER);
+        doc->Animate("opacity", Rml::Property(1.0f, Rml::Unit::NUMBER), seconds, EASE, 1, false, 0.0f, &from);
+        doc->SetClass("is-fading", true);
+        g_fading.push_back({ doc, std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(static_cast<int>(seconds * 1000.0f)), false });
+    }
+
+    void fade_out(Rml::ElementDocument* doc, float seconds) {
+        if (doc == nullptr || !doc->IsVisible()) {
+            return;
+        }
+        stop_fading(doc);
+        doc->Animate("opacity", Rml::Property(0.0f, Rml::Unit::NUMBER), seconds, EASE, 1, false);
+        doc->SetClass("is-fading", true);
+        g_fading.push_back({ doc, std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(static_cast<int>(seconds * 1000.0f)), true });
+    }
+
+    // PHOTO MODE'S BUTTON GUIDE (the user, 2026-10-13; ui/prompts/photo_guide.h): photo mode's
+    // controls on the device in use, as that device is bound. The pad numbers it names without SDL
+    // must be SDL's.
+    static_assert(static_cast<int>(oot::ui::prompts::photo_guide::pad::A) == static_cast<int>(SDL_CONTROLLER_BUTTON_A) &&
+                  static_cast<int>(oot::ui::prompts::photo_guide::pad::RightShoulder) == static_cast<int>(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) &&
+                  static_cast<int>(oot::ui::prompts::photo_guide::pad::DUp) == static_cast<int>(SDL_CONTROLLER_BUTTON_DPAD_UP) &&
+                  static_cast<int>(oot::ui::prompts::photo_guide::pad::Touchpad) == static_cast<int>(SDL_CONTROLLER_BUTTON_TOUCHPAD) &&
+                  static_cast<int>(oot::ui::prompts::photo_guide::pad::RightY) == static_cast<int>(SDL_CONTROLLER_AXIS_RIGHTY) &&
+                  static_cast<int>(oot::ui::prompts::photo_guide::pad::TriggerRight) == static_cast<int>(SDL_CONTROLLER_AXIS_TRIGGERRIGHT),
+                  "photo_guide.h's pad numbers are SDL's standard layout");
+
+    // The bindings of the pad in use: its profile, found by the pad that pressed something last
+    // (or the first pad), or the pad defaults when it has none yet.
+    // The pad last used, or the first connected; -1 with none.
+    int pad_slot_in_use() {
+        namespace dev = oot::input::devices;
+        const int instance = oot::ui::input::last_pad_instance();
+        int slot_in_use = -1;
+        for (int slot = 0; slot < dev::pad_count(); ++slot) {
+            dev::UiPad pad;
+            if (dev::ui_pad(slot, pad) && (slot_in_use < 0 || pad.instance == instance)) {
+                slot_in_use = slot;
+                if (pad.instance == instance) {
+                    break;
+                }
+            }
+        }
+        return slot_in_use;
+    }
+
+    const oot::input::InputBindings& pad_bindings_in_use(const oot::input::Bindings& all) {
+        static const oot::input::InputBindings defaults = [] {
+            oot::input::InputBindings b{};
+            oot::input::controller_defaults(b);
+            return b;
+        }();
+        namespace dev = oot::input::devices;
+        const int slot_in_use = pad_slot_in_use();
+        dev::PadInfo info;
+        if (slot_in_use >= 0 && dev::pad_info(slot_in_use, info)) {
+            for (const oot::input::Profile& p : all.profiles) {
+                if (p.guid == info.guid) {
+                    return p.bindings;
+                }
+            }
+        }
+        return defaults;
+    }
+
+    std::vector<shell_model::Prompt> guide_prompts() {
+        namespace pr = oot::ui::prompts;
+        namespace pg = oot::ui::prompts::photo_guide;
+        const pr::Family family = pr::family_of(g_prompt_device);
+        const std::shared_ptr<const oot::input::Bindings> all = oot::input::live();
+        const oot::input::InputBindings& bound = family == pr::Family::Keyboard ? all->keyboard : pad_bindings_in_use(*all);
+        const pg::Lookup lookup = [&bound](oot::input::GameInput input) { return bound[static_cast<size_t>(input)]; };
+        const pg::KeyName names = key_name_of;
+        std::vector<shell_model::Prompt> out;
+        for (const pr::Prompt& p : pg::rows(family, lookup, names, pg::Here{ oot::photo::hud_hidden(), oot::photo::hud_dimmed() })) {
+            out.push_back({ p.glyph.kind, p.glyph.key, p.glyph.shape, p.glyph.tint, p.label, p.action });
+        }
+        return out;
+    }
+
+    // Up while photo mode holds the game, no menu is open and its binding has not hidden it; it
+    // eases in and out like the menu does, and its prompts keep the footer's size (shell_model.h).
+    void poll_guide() {
+        if (g_guide_doc == nullptr) {
+            return;
+        }
+        const bool want = g_game_started && oot::photo::active() && !oot::photo::guide_hidden() && g_screen == Screen::None;
+        const bool going = std::any_of(g_fading.begin(), g_fading.end(),
+                                       [](const Fading& f) { return f.doc == g_guide_doc && f.out; });
+        if (want) {
+            shell_model::set_guide(guide_prompts());
+            shell_model::hold_prompt_size(g_guide_doc, g_context->GetDensityIndependentPixelRatio());
+            if (!g_guide_doc->IsVisible() || going) {
+                g_guide_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+                fade_in(g_guide_doc, oot::ui::tokens::duration_base);
+            }
+        }
+        else if (g_guide_doc->IsVisible() && !going) {
+            fade_out(g_guide_doc, oot::ui::tokens::duration_base);
+        }
+    }
+
+    // Hides what has finished fading; once a frame.
+    void poll_fading() {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = g_fading.begin(); it != g_fading.end();) {
+            if (now >= it->until) {
+                it->doc->SetClass("is-fading", false);
+                if (it->out) {
+                    it->doc->Hide();
+                    it->doc->SetProperty(Rml::PropertyId::Opacity, Rml::Property(1.0f, Rml::Unit::NUMBER));
+                }
+                it = g_fading.erase(it);
+            }
+            else {
+                ++it;
+            }
+        }
+    }
+
+    void refresh_shell() {
+        if (g_shell_doc == nullptr) {
+            return;
+        }
+        shell_model::State state;
+        state.mode = g_router.mode() == menu::Mode::Launcher ? "launcher" : "game";
+        switch (menu::placement_for(g_router.mode(), oot::ui::settings().menu_side)) {
+            case menu::Placement::Launcher:    state.placement = "launcher"; break;
+            case menu::Placement::DockedLeft:  state.placement = "left"; break;
+            case menu::Placement::DockedRight: state.placement = "right"; break;
+            case menu::Placement::Centered:    state.placement = "center"; break;
+        }
+        state.title = info_of(g_router.section()).name;
+        state.version = oot::build_info::version;
+        state.held = g_router.mode() == menu::Mode::Game && g_router.open();
+        const std::vector<menu::Section> order = g_router.sections();
+        const int n = static_cast<int>(order.size());
+        int current = 0;
+        for (int i = 0; i < n; ++i) {
+            if (order[static_cast<size_t>(i)] == g_router.section()) {
+                current = i;
+            }
+        }
+        for (int i = 0; i < n; ++i) {
+            const SectionInfo& info = info_of(order[static_cast<size_t>(i)]);
+            // Where this section stands from the current one, the shorter way round the dial.
+            int d = ((i - current) % n + n) % n;
+            if (d > n / 2) {
+                d -= n;
+            }
+            state.sections.push_back({ info.id, info.name, info.glyph, (d >= -2 && d <= 2) ? d : 99, d == 0 });
+        }
+        state.prompts = prompts_for(g_prompt_device);
+        state.pins = dial_pins_for(g_prompt_device);
+        shell_model::set(state);
+
+        const bool up = g_screen != Screen::None;
+        if (up && (!g_shell_doc->IsVisible() || !g_fading.empty())) {
+            const bool opening = !g_shell_doc->IsVisible() || std::any_of(g_fading.begin(), g_fading.end(),
+                                                                          [](const Fading& f) { return f.doc == g_shell_doc && f.out; });
+            g_shell_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+            if (opening) {
+                fade_in(g_shell_doc, oot::ui::tokens::duration_base);
+            }
+        }
+        else if (!up && g_shell_doc->IsVisible()) {
+            fade_out(g_shell_doc, oot::ui::tokens::duration_base);
+        }
+        if (up) {
+            g_shell_doc->PushToBack();
+        }
+    }
+
+    // Lays the page's document into the shell's page box. Called after the context's update, when
+    // the box has its size; true when it moved something, so the caller updates once more.
+    bool place_page() {
+        if (g_shell_doc == nullptr || !g_shell_doc->IsVisible()) {
+            return false;
+        }
+        Rml::ElementDocument* doc = page_doc(g_page);
+        Rml::Element* host = g_shell_doc->GetElementById("sh-host");
+        if (doc == nullptr || host == nullptr) {
+            return false;
+        }
+        // CENTERED, THE PAGE'S BOX ENDS WHERE THE FOOTER BEGINS (phase 116): the footer takes a
+        // second line when the panel is too narrow for its prompts (phase 113), and a box ending at
+        // the one line height then ran under it, the footer drawn over the page's last row.
+        {
+            static float s_bottom = -1.0f;
+            Rml::Element* prompts = g_shell_doc->GetElementById("sh-prompts");
+            const bool center = shell_model::get().placement == "center";
+            const float wanted = (center && prompts != nullptr) ? prompts->GetBox().GetSize(Rml::BoxArea::Border).y : -1.0f;
+            if (std::fabs(wanted - s_bottom) > 0.5f) {
+                s_bottom = wanted;
+                if (wanted >= 0.0f) {
+                    host->SetProperty(Rml::PropertyId::Bottom, Rml::Property(wanted, Rml::Unit::PX));
+                }
+                else {
+                    host->RemoveProperty(Rml::PropertyId::Bottom);
+                }
+                g_context->Update();
+            }
+        }
+        const Rml::Vector2f at = host->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const Rml::Vector2f size = host->GetBox().GetSize(Rml::BoxArea::Border);
+        if (doc == g_host_doc && at == g_host_at && size == g_host_size) {
+            return false;
+        }
+        doc->SetProperty(Rml::PropertyId::Position, Rml::Property(Rml::Style::Position::Absolute));
+        doc->SetProperty(Rml::PropertyId::Left, Rml::Property(at.x, Rml::Unit::PX));
+        doc->SetProperty(Rml::PropertyId::Top, Rml::Property(at.y, Rml::Unit::PX));
+        doc->SetProperty(Rml::PropertyId::Width, Rml::Property(size.x, Rml::Unit::PX));
+        doc->SetProperty(Rml::PropertyId::Height, Rml::Property(size.y, Rml::Unit::PX));
+        g_host_doc = doc;
+        g_host_at = at;
+        g_host_size = size;
+        // Where the page went, and where the prompts sit under it, once per move: the harness
+        // reads this to tell a page laid out of its box from one that is merely drawn wrong.
+        Rml::Element* prompts = g_shell_doc->GetElementById("sh-prompts");
+        std::fprintf(stderr, "[ui] page %s in %.0f,%.0f %.0fx%.0f; prompts at %.0f, %.0f high\n", screen_name(g_page),
+                     at.x, at.y, size.x, size.y,
+                     prompts != nullptr ? prompts->GetAbsoluteOffset(Rml::BoxArea::Border).y : -1.0f,
+                     prompts != nullptr ? prompts->GetBox().GetSize(Rml::BoxArea::Border).y : -1.0f);
+        return true;
+    }
+
+    // The router follows whatever was opened, so every way of opening a screen (a row, a key, a
+    // dialog's answer, a click on the dial) leaves the dial saying where you are.
+    void sync_router(Screen screen) {
+        if (screen == Screen::None) {
+            g_router.close();
+            return;
+        }
+        menu::Section section{};
+        menu::Page page{};
+        if (!section_of(screen, section, page)) {
+            return;
+        }
+        if (section == menu::Section::Debugging) {
+            g_router.unlock_debugging();
+        }
+        if (!g_router.open() || g_router.section() != section || (page == menu::Page::Root && g_router.depth() > 0)) {
+            g_router.open_on(section);
+        }
+        if (page != menu::Page::Root && g_router.page() != page) {
+            g_router.push(page);
+        }
+    }
+
+    // Turns the dial and opens the section it lands on. A dialog holds the dial still.
+    void turn_dial(int step) {
+        if (g_screen == Screen::Ask || g_screen == Screen::None) {
+            return;
+        }
+        if (step > 0) {
+            g_router.next();
+        }
+        else {
+            g_router.prev();
+        }
+        show(section_root_screen());
+    }
+
+    // A click on a medallion of the dial or on the rail.
+    void click_section(const std::string& id) {
+        for (const SectionInfo& s : SECTIONS) {
+            if (id == std::string("sec-") + s.id && g_router.available(s.section) && g_screen != Screen::Ask) {
+                show(s.screen);
+                return;
+            }
+        }
+    }
+
+    // A click on a prompt does what its button does.
+    void click_prompt(const std::string& id) {
+        const std::string action = id.substr(7);
+        if (action == "accept") {
+            handle_nav(Nav::Accept);
+        }
+        else if (action == "back") {
+            handle_nav(Nav::Back);
+        }
+        else if (action == "dial-prev" || action == "dial-next") {
+            turn_dial(action == "dial-next" ? 1 : -1);
+        }
+        else if (action == "change") {
+            handle_nav(Nav::Right);
+        }
+        else if (action == "close" || action == "close-also") {
+            show(Screen::None);
+        }
+        else if (action == "type") {
+            open_keyboard();
+        }
+    }
+
     void show(Screen screen) {
         // Until the game has been started, nothing open means the launcher.
         if (screen == Screen::None && !g_game_started) {
             screen = Screen::Launch;
         }
         const Screen previous = g_screen;
+        if (screen == Screen::Ask && previous != Screen::Ask) {
+            g_ask_yes = false;
+        }
+        // The menu opening over the game and closing again (phase 111).
+        if (previous == Screen::None && screen != Screen::None) {
+            oot::ui::sound::play(oot::ui::sound::Cue::Open);
+        }
+        else if (previous != Screen::None && screen == Screen::None) {
+            oot::ui::sound::play(oot::ui::sound::Cue::Close);
+        }
 
         if (previous == Screen::Controls && screen != Screen::Controls) {
             devices::cancel_capture();
@@ -4042,6 +5407,7 @@ namespace {
         }
         if (previous == Screen::Browse && screen != Screen::Browse) {
             blur_text_entry();
+            close_keyboard();
         }
 
         const auto set = [](Rml::ElementDocument* doc, bool on) {
@@ -4055,17 +5421,20 @@ namespace {
                 doc->Hide();
             }
         };
-        // Before the game has started, a document opened from the launcher is a modal over it:
-        // the launcher stays drawn beneath, pushed to the back, so the document's translucent
-        // scrim dims it the way it dims the game in play, rather than the runtime's empty
-        // frames showing black behind the case.
-        const bool modal_over_launcher = !g_game_started &&
-            (screen == Screen::Settings || screen == Screen::About || screen == Screen::Controls ||
-             screen == Screen::Lighting || screen == Screen::Hud || screen == Screen::Ask);
-        set(g_settings_doc, screen == Screen::Settings);
-        set(g_lighting_doc, screen == Screen::Lighting);
-        set(g_debug_doc, screen == Screen::Debug);
-        set(g_hud_doc, screen == Screen::Hud);
+        // EVERY SCREEN IS A PAGE OF THE ONE MENU (phase 96), so one page is up at a time, in the
+        // shell's box; a dialog is drawn over the page it was raised from, which stays up beneath.
+        const Screen old_page = g_page;
+        if (screen != Screen::Ask) {
+            g_page = screen;
+        }
+        else if (page_doc(g_page) == nullptr) {
+            g_page = g_game_started ? Screen::Settings : Screen::Launch;
+        }
+        const Screen page = g_page;
+        set(g_settings_doc, settings_like(page));
+        set(g_lighting_doc, page == Screen::Lighting);
+        set(g_debug_doc, page == Screen::Debug);
+        set(g_hud_doc, page == Screen::Hud);
         // A DEVICE THAT CANNOT TRACE SAYS SO ON THE SCREEN THAT OFFERS IT (2026-09-26, the user on
         // an Intel Iris Xe laptop: "Does ray tracing just not work at all on some devices?" and
         // then, looking at a panel reading DirectX 12 and Shader Model 6.7, "I feel like I should
@@ -4080,20 +5449,39 @@ namespace {
                          : "This graphics device cannot trace rays, so these rows change nothing and the game "
                            "draws its own lighting and shadows. It needs a card that supports DirectX Raytracing");
         }
-        set(g_about_doc, screen == Screen::About);
-        set(g_controls_doc, screen == Screen::Controls);
-        set(g_launch_doc, screen == Screen::Launch || modal_over_launcher);
-        set(g_browse_doc, screen == Screen::Browse);
-        set(g_files_doc, screen == Screen::Files);
+        set(g_about_doc, page == Screen::About);
+        set(g_controls_doc, page == Screen::Controls);
+        set(g_launch_doc, page == Screen::Launch);
+        set(g_browse_doc, page == Screen::Browse);
+        set(g_files_doc, page == Screen::Files);
         set(g_ask_doc, screen == Screen::Ask);
-        set(g_warps_doc, screen == Screen::Warps);
-        set(g_moments_doc, screen == Screen::Moments);
-        if (modal_over_launcher && g_launch_doc != nullptr) {
-            g_launch_doc->PushToBack();
+        set(g_warps_doc, page == Screen::Warps);
+        set(g_moments_doc, page == Screen::Moments);
+        // The page eases in when it changes, and the page the menu closed on eases out with it.
+        if (page != old_page || previous == Screen::None) {
+            if (Rml::ElementDocument* doc = page_doc(page)) {
+                fade_in(doc, oot::ui::tokens::duration_base);
+            }
+        }
+        if (screen == Screen::None && previous != Screen::None) {
+            if (Rml::ElementDocument* doc = page_doc(old_page)) {
+                doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+                fade_out(doc, oot::ui::tokens::duration_base);
+            }
         }
 
         g_screen = screen;
-        g_capturing.store(screen != Screen::None, std::memory_order_relaxed);
+        if (g_capturing.exchange(screen != Screen::None, std::memory_order_relaxed) && screen == Screen::None) {
+            g_capture_releases.fetch_add(1, std::memory_order_release);
+        }
+        sync_router(screen);
+        // THE MENU HOLDS THE GAME while it is open in the game (phase 97), through photo mode's
+        // freeze, the sound left playing.
+        oot::shots::set_menu_hold(g_router.holds());
+        refresh_shell();
+        if (g_ask_doc != nullptr && screen == Screen::Ask) {
+            g_ask_doc->PullToFront();
+        }
         // The picture comes back to the whole window when no menu is up, and moves aside when a
         // side panel is. Every menu screen takes the placement now, so it is applied here once for
         // all of them (and again below for the ones that rebuild their rows).
@@ -4102,15 +5490,15 @@ namespace {
             std::fprintf(stderr, "[ui] screen %s\n", screen_name(screen));
         }
 
-        if (screen == Screen::Settings) {
-            if (previous != Screen::Settings) {
+        if (settings_like(screen)) {
+            if (previous != screen) {
                 g_focus = 0;
                 // The system's microphones read again as the settings open, so one plugged in
                 // since shows on the Microphone device row (main/microphone.h).
                 oot::microphone::refresh();
             }
             apply_menu_placement();
-            reflect_rows(screen);
+            refresh_rows(screen);
             apply_rows_focus(screen);
         }
         else if (screen == Screen::Lighting) {
@@ -4118,7 +5506,7 @@ namespace {
                 g_focus = 0;
             }
             apply_menu_placement();
-            reflect_rows(screen);
+            refresh_rows(screen);
             apply_rows_focus(screen);
         }
         else if (screen == Screen::Debug) {
@@ -4126,7 +5514,7 @@ namespace {
                 g_focus = 0;
             }
             apply_menu_placement();
-            reflect_rows(screen);
+            refresh_rows(screen);
             apply_rows_focus(screen);
         }
         else if (screen == Screen::Hud) {
@@ -4134,7 +5522,7 @@ namespace {
                 g_focus = 0;
             }
             apply_menu_placement();
-            reflect_rows(screen);
+            refresh_rows(screen);
             apply_rows_focus(screen);
         }
         else if (screen == Screen::Launch) {
@@ -4172,7 +5560,7 @@ namespace {
                     }
                 }
             }
-            reflect_rows(screen);
+            refresh_rows(screen);
             apply_rows_focus(screen);
             g_rom_seen = rom_value() + "|" + rom_note();
         }
@@ -4225,8 +5613,13 @@ namespace {
         else if (screen == Screen::Controls) {
             controls::refresh();
             g_pads_seen = devices::pad_count();
-            g_cfocus = 0;
-            g_cslot = 0;
+            // On the way in only: the device in use is selected, and the focus starts at the top.
+            // Shown again while already open (a refresh), the person's selection and place stay.
+            if (previous != Screen::Controls) {
+                controls::select_in_use(oot::ui::input::last_pad_instance());
+                g_cfocus = 0;
+                g_cslot = 0;
+            }
             reflect_controls();
         }
 
@@ -4238,6 +5631,81 @@ namespace {
             if (lead + "|" + note != g_hint_last) {
                 show_hint();
             }
+        }
+    }
+
+    void start_splash() {
+        g_splash_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+        g_splash_doc->PullToFront();
+        g_splash = SplashState::Showing;
+        g_splash_since = Clock::now();
+        g_splash_frames = 0;
+        g_capturing.store(true, std::memory_order_relaxed);
+        say("splash");
+    }
+
+    void poll_splash() {
+        if (g_splash == SplashState::Off || g_splash_doc == nullptr) {
+            return;
+        }
+        const double t = seconds_since(g_splash_since);
+        if (g_splash == SplashState::Showing) {
+            // THE GOLD POURS ONCE THE SLAB HAS BEEN DRAWN (the user, 2026-10-13: "the splash starts
+            // already filled"). A transition needs a first value to start from, and this waited a
+            // fixed 0.05 s for it; the first frame comes later than that while the window and the
+            // renderer come up, so the class landed before the bar had ever been drawn at zero and
+            // it appeared full. It now waits for three frames drawn WITH THE WINDOW ON SCREEN (the
+            // window is held hidden until the first frame, launch.h; the slab's own textures reach the
+            // card on the second), and the splash's time counts from the pour, so it is all seen.
+            //
+            // NO TIME LIMIT ON THAT WAIT (the user, 2026-10-13, after the first fix: "nope still gold
+            // when it loaded. it starts as a black rectangle before anything shows"). The window is
+            // shown before the renderer is up, and no frame is drawn while it starts; a fallback that
+            // poured after 1.5 s counted that black stretch, fired on the first frame after it, and
+            // the bar was full again. This only runs when a frame is drawn, so it cannot wait forever.
+            if (!g_splash_poured && g_splash_frames >= 3) {
+                g_splash_poured = true;
+                std::fprintf(stderr, "[ui] splash on screen %.2f s after it was set up; the pour begins\n", t);
+                g_splash_since = Clock::now();
+                return;
+            }
+            if (!g_splash_poured) {
+                return;
+            }
+            // THE POUR'S WIDTH, FRAME BY FRAME (the user, 2026-10-13: "still not starting grey and
+            // filling"): a transition on a class never animated, so the program eases it itself.
+            if (Rml::Element* pour = g_splash_doc->GetElementById("splash-pour")) {
+                // As loading reads (the user, 2026-10-13): slowly to the pause, a hold, then the rest.
+                namespace tk = oot::ui::tokens;
+                const float at = static_cast<float>(t);
+                float share = 1.0f;
+                if (at < tk::splash_pour_first) {
+                    share = tk::splash_pour_pause_at * quartic_in_out(at / tk::splash_pour_first);
+                }
+                else if (at < tk::splash_pour_first + tk::splash_pour_hold) {
+                    share = tk::splash_pour_pause_at;
+                }
+                else {
+                    const float rest = (at - tk::splash_pour_first - tk::splash_pour_hold) / tk::splash_pour_rest;
+                    share = tk::splash_pour_pause_at + (1.0f - tk::splash_pour_pause_at) * quartic_in_out(rest);
+                }
+                // Along the name, not the slab: the share is of the name itself.
+                const float width = tk::splash_name_from + share * (tk::splash_name_to - tk::splash_name_from);
+                pour->SetProperty(Rml::PropertyId::Width, Rml::Property(width, Rml::Unit::DP));
+            }
+            if (t >= SPLASH_MIN_SECONDS || (g_splash_skip && t >= SPLASH_SKIP_AFTER_SECONDS)) {
+                g_splash = SplashState::Fading;
+                g_splash_since = Clock::now();
+                g_splash_doc->SetClass("gone", true);
+                show(Screen::None);   // the launcher, beneath the fading splash
+                launch::request_maximize_launcher();
+                g_splash_doc->PullToFront();
+                say("splash gone");
+            }
+        }
+        else if (t >= SPLASH_FADE_SECONDS) {
+            g_splash_doc->Hide();
+            g_splash = SplashState::Off;
         }
     }
 
@@ -4259,16 +5727,18 @@ namespace {
                     break;
 
                 case Command::Kind::Toggle:
-                    // Opens the screen when nothing is open and closes whatever is open
-                    // otherwise. The launcher counts as nothing open, except that it already
-                    // holds the settings, so the settings toggle does nothing there.
-                    if (g_screen == Screen::None || g_screen == Screen::Launch) {
-                        if (!(g_screen == Screen::Launch && c.screen == Screen::Settings)) {
-                            show(c.screen);
-                        }
+                    // F1, F2, F3 and the menu key OPEN THE MENU ON THEIR SECTION (phase 96): from
+                    // a closed menu, or from another section, they go there; pressed on their own
+                    // section they close the menu in the game and go back to Play before it. A
+                    // question being asked holds.
+                    if (g_screen == Screen::Ask) {
+                        break;
+                    }
+                    if (g_screen == c.screen) {
+                        show(Screen::None);
                     }
                     else {
-                        show(Screen::None);
+                        show(c.screen);
                     }
                     break;
 
@@ -4285,6 +5755,10 @@ namespace {
                 }
 
                 case Command::Kind::MouseButton:
+                    if (g_splash == SplashState::Showing && c.down) {
+                        g_splash_skip = true;
+                        break;
+                    }
                     if (g_context != nullptr) {
                         if (c.down) {
                             g_context->ProcessMouseButtonDown(c.x, 0);
@@ -4338,7 +5812,87 @@ namespace {
 
     // A navigation on whatever is open: from the keys and the pad through the queue, and from
     // a modal's own close button (Back).
+    void handle_nav_now(Nav nav);
+
+    // What a move does to bring a page's contents back, without moving: the rows rebuilt and the
+    // focus applied and followed into view; any other page shown again as it is.
+    void refresh_after_resize() {
+        switch (g_screen) {
+            case Screen::Settings:
+            case Screen::Graphics:
+            case Screen::Gameplay:
+            case Screen::Capture:
+            case Screen::Photo:
+            case Screen::Video:
+            case Screen::Launch:
+            case Screen::Lighting:
+            case Screen::Hud:
+            case Screen::Debug:
+                refresh_rows(g_screen);
+                apply_rows_focus(g_screen);
+                break;
+            default:
+                show(g_screen);
+                break;
+        }
+        std::fprintf(stderr, "[ui] refreshed %s after a resize\n", screen_name(g_screen));
+    }
+
+    // THE MENU'S SOUNDS (phase 111): each press makes its sound after it has acted, so a change
+    // to the sound rows themselves is heard at the new volume, and turning them On is heard.
     void handle_nav(Nav nav) {
+        namespace snd = oot::ui::sound;
+        const bool splash = g_splash == SplashState::Showing;
+        const Screen before = g_screen;
+        const bool value = focused_is_value();
+        handle_nav_now(nav);
+        // A press that closed the menu has made the closing sound already (show).
+        if (splash || before == Screen::None || g_screen == Screen::None) {
+            return;
+        }
+        switch (nav) {
+            case Nav::Up:
+            case Nav::Down:
+            case Nav::SectionPrev:
+            case Nav::SectionNext:
+                snd::play(snd::Cue::Move);
+                break;
+            case Nav::Left:
+            case Nav::Right:
+                snd::play(value ? snd::Cue::Toggle : snd::Cue::Move);
+                break;
+            case Nav::Accept:
+                snd::play(snd::Cue::Select);
+                break;
+            case Nav::Back:
+                // Back on the launcher's first page goes nowhere: the refusal, not a step back.
+                snd::play(before == Screen::Launch && g_screen == Screen::Launch ? snd::Cue::Refuse : snd::Cue::Back);
+                break;
+            default:
+                snd::play(snd::Cue::Toggle);
+                break;
+        }
+    }
+
+    void handle_nav_now(Nav nav) {
+        // The splash takes any press as a wish to get on (phase 99).
+        if (g_splash == SplashState::Showing) {
+            g_splash_skip = true;
+            return;
+        }
+        // The on-screen keyboard holds every press while it is up (phase 110).
+        if (g_kb_open) {
+            keyboard_nav(nav);
+            return;
+        }
+        // THE SHOULDERS, Q AND E TURN THE DIAL (phase 96), from any section and any page in it,
+        // except while a question or the capture panel holds the focus.
+        if (nav == Nav::SectionPrev || nav == Nav::SectionNext) {
+            if (!(g_screen == Screen::Controls && (g_capture_open || devices::capture_status() == devices::CaptureStatus::Waiting))) {
+                turn_dial(nav == Nav::SectionNext ? 1 : -1);
+            }
+            return;
+        }
         switch (g_screen) {
             case Screen::None:
                 break;
@@ -4364,12 +5918,18 @@ namespace {
             // way past this that does not decide, because the whole point of asking is that
             // nothing acts until somebody has. Left and Right move between the two answers the
             // way they move a setting, and Enter takes the one under the focus.
+            //
+            // THE BASELINE'S FIRST DEFECT (the menus plan, baseline.md): Left used to answer No at
+            // once, against the sentence above, and Right to answer Yes. They move the focus now,
+            // No first (the safe answer, never a destructive one by default), and Enter, the pad's
+            // A or a click takes the answer.
             case Screen::Ask:
-                if (nav == Nav::Left) {
-                    click_ask(false);
+                if (nav == Nav::Left || nav == Nav::Right) {
+                    g_ask_yes = nav == Nav::Right;
+                    ask_focus_draw();
                 }
-                else if (nav == Nav::Right || nav == Nav::Accept) {
-                    click_ask(true);
+                else if (nav == Nav::Accept) {
+                    click_ask(g_ask_yes);
                 }
                 else if (nav == Nav::Back && g_confirm_open) {
                     // Escape and the pad's B decline. The first run questions still refuse Back,
@@ -4390,7 +5950,9 @@ namespace {
                 else if (nav == Nav::Up || nav == Nav::Down) {
                     Rml::Element* body = g_about_doc != nullptr ? g_about_doc->GetElementById("about-body") : nullptr;
                     if (body != nullptr) {
-                        body->SetScrollTop(body->GetScrollTop() + (nav == Nav::Down ? ABOUT_SCROLL_STEP : -ABOUT_SCROLL_STEP));
+                        body->ScrollTo(Rml::Vector2f(body->GetScrollLeft(),
+                                                     body->GetScrollTop() + (nav == Nav::Down ? ABOUT_SCROLL_STEP : -ABOUT_SCROLL_STEP)),
+                                       list_scroll());
                     }
                 }
                 break;
@@ -4398,6 +5960,11 @@ namespace {
                 browse_nav(nav);
                 break;
             case Screen::Settings:
+            case Screen::Graphics:
+            case Screen::Gameplay:
+            case Screen::Capture:
+            case Screen::Photo:
+            case Screen::Video:
             case Screen::Launch:
                 rows_nav(g_screen, nav);
                 break;
@@ -4412,7 +5979,9 @@ namespace {
             return false;
         }
 
-        load_fonts();
+        oot::ui::fonts::load(g_assets_dir);
+        // The menu's own sounds (phase 111): their device, or one line saying they are silent.
+        oot::ui::sound::start();
 
         g_context = Rml::CreateContext("main", Rml::Vector2i(g_width, g_height));
         if (g_context == nullptr) {
@@ -4420,12 +5989,25 @@ namespace {
             return false;
         }
         scale_to_canvas();
+        // The rows' data model (phase 95), before the documents that bind it.
+        if (!oot::ui::rows::create(g_context)) {
+            say("the rows' data model would not start, so the menus will have no rows");
+        }
+        // The shell's (phase 96), and the shell itself: the one menu every page is laid into.
+        if (!shell_model::create(g_context)) {
+            say("the shell's data model would not start, so the menu will have no dial");
+        }
+        g_shell_doc = load("shell.rml");
+        g_shell_doc_for_inset = g_shell_doc;
+        g_splash_doc = load("splash.rml");
+        g_keyboard_doc = load("keyboard.rml");
 
         g_settings_doc = load("settings.rml");
         g_about_doc = load("about.rml");
         g_controls_doc = load("controls.rml");
         g_hint_doc = load("hint.rml");
         g_counter_doc = load("counter.rml");
+        g_guide_doc = load("photo-guide.rml");
         g_letterbox_doc = load("letterbox.rml");
         g_recorder_doc = load("recorder.rml");
         g_update_doc = load("update.rml");
@@ -4440,6 +6022,29 @@ namespace {
         g_ask_doc = load("ask.rml");
         g_frame_doc = load("frame.rml");
 
+        // THE FOCUS RING (the user, 2026-10-13): every action button gets an element of its own
+        // for the ring the stylesheet draws a few dp outside it while it has the focus
+        // (case.rcss, .focus-ring).
+        for (Rml::ElementDocument* doc : { g_ask_doc, g_files_doc, g_launch_doc, g_moments_doc, g_settings_doc }) {
+            if (doc == nullptr) {
+                continue;
+            }
+            Rml::ElementList buttons;
+            doc->QuerySelectorAll(buttons, ".act-btn");
+            for (Rml::Element* button : buttons) {
+                Rml::ElementPtr ring = doc->CreateElement("div");
+                ring->SetClass("focus-ring", true);
+                button->AppendChild(std::move(ring));
+            }
+        }
+
+        // Every rows document draws its rows through the one template, bound to its own list.
+        for (const Screen screen : { Screen::Launch, Screen::Settings, Screen::Lighting, Screen::Hud, Screen::Debug }) {
+            if (Rml::ElementDocument* doc = rows_doc(screen)) {
+                oot::ui::rows::install(doc->GetElementById(rows_container(screen)), rows_list(screen));
+            }
+        }
+
         if (g_settings_doc == nullptr && g_about_doc == nullptr) {
             say("no documents loaded, so there is nothing to show");
             return false;
@@ -4452,9 +6057,17 @@ namespace {
         for (Rml::ElementDocument* doc : { g_settings_doc, g_about_doc, g_controls_doc, g_launch_doc,
                                           g_browse_doc, g_files_doc, g_ask_doc, g_frame_doc,
                                           g_warps_doc, g_recorder_doc, g_update_doc, g_moments_doc,
-                                          g_lighting_doc, g_debug_doc, g_hud_doc }) {
+                                          g_lighting_doc, g_debug_doc, g_hud_doc, g_shell_doc, g_keyboard_doc }) {
             if (doc != nullptr) {
                 doc->AddEventListener("mouseup", &g_clicks);
+            }
+        }
+        // Every page is drawn inside the shell's box, without its own lid, foot or scrim.
+        for (const Screen screen : { Screen::Launch, Screen::Browse, Screen::Files, Screen::Warps, Screen::Settings,
+                                     Screen::Lighting, Screen::Hud, Screen::Debug, Screen::Controls, Screen::Moments,
+                                     Screen::About }) {
+            if (Rml::ElementDocument* doc = page_doc(screen)) {
+                doc->SetClass("in-shell", true);
             }
         }
 
@@ -4462,13 +6075,69 @@ namespace {
         load_changelog();
         stamp_versions();
         g_game_started = launch::game_started();
-        show(Screen::None);
+        g_router.set_mode(g_game_started ? menu::Mode::Game : menu::Mode::Launcher);
+        // Before Play the splash comes first, and the launcher when it goes (poll_splash).
+        if (!g_game_started && g_splash_doc != nullptr) {
+            start_splash();
+        }
+        else {
+            show(Screen::None);
+            if (!g_game_started) {
+                launch::request_maximize_launcher();
+            }
+        }
         return true;
     }
 
 } // namespace
 
 namespace oot::ui::shell {
+
+    // THE ROWS DUMP (the menus plan, phase 95): every rows document's rows, under the defaults and
+    // under the choices that bring rows in and take them away, one line a row. Taken before and
+    // after a change to how rows are drawn, the two files must be identical. Reads the tables
+    // only: no window, no renderer, nothing written but the file named.
+    int dump_rows(const std::string& path) {
+        struct State {
+            const char* name;
+            void (*set)(oot::ui::Settings&);
+        };
+        const State states[] = {
+            { "defaults", [](oot::ui::Settings&) {} },
+            { "screenshots, video and microphone on, a pack chosen", [](oot::ui::Settings& s) {
+                s.screenshots = 1; s.video_recording = 1; s.microphone = 1; s.texture_pack = 1; } },
+            { "the HUD fades when idle, to clear, each part its own size, custom place", [](oot::ui::Settings& s) {
+                s.hud_fade = 1; s.hud_fade_to = 0; s.hud_sizes = 1; s.hud_ratio = 3; } },
+            { "the HUD fades always, to a color", [](oot::ui::Settings& s) {
+                s.hud_fade = 2; s.hud_fade_to = 1; } },
+        };
+        const std::pair<Screen, const char*> screens[] = {
+            { Screen::Launch, "launcher" }, { Screen::Settings, "settings" }, { Screen::Graphics, "graphics" },
+            { Screen::Lighting, "lighting" }, { Screen::Gameplay, "gameplay" }, { Screen::Capture, "capture" },
+            { Screen::Photo, "photo" }, { Screen::Video, "video" }, { Screen::Hud, "hud" }, { Screen::Debug, "debugging" },
+        };
+        std::FILE* out = std::fopen(path.c_str(), "wb");
+        if (out == nullptr) {
+            std::printf("ROWS_DUMP_FAIL cannot write %s\n", path.c_str());
+            return 1;
+        }
+        int lines = 0;
+        for (const State& state : states) {
+            oot::ui::Settings s{};
+            state.set(s);
+            oot::ui::clamp(s);
+            for (const auto& [screen, name] : screens) {
+                std::fprintf(out, "== %s / %s\n", state.name, name);
+                for (const oot::ui::rows::Row& row : row_views(screen, s, oot::ui::lighting::defaults())) {
+                    std::fprintf(out, "%s\n", oot::ui::rows::dump_line(row).c_str());
+                    ++lines;
+                }
+            }
+        }
+        std::fclose(out);
+        std::printf("ROWS_DUMP_OK %d rows to %s\n", lines, path.c_str());
+        return 0;
+    }
 
     void configure(const std::string& assets_dir, const std::string& settings_path) {
         g_assets_dir = assets_dir;
@@ -4504,6 +6173,17 @@ namespace oot::ui::shell {
         if (!g_started) {
             return;
         }
+        oot::ui::rows::release();
+        shell_model::release();
+        g_shell_doc = nullptr;
+        g_splash_doc = nullptr;
+        g_splash = SplashState::Off;
+        g_keyboard_doc = nullptr;
+        g_kb_open = false;
+        g_shell_doc_for_inset = nullptr;
+        g_host_doc = nullptr;
+        g_host_at = Rml::Vector2f(-1.0f, -1.0f);
+        g_host_size = Rml::Vector2f(-1.0f, -1.0f);
         g_settings_doc = nullptr;
         g_about_doc = nullptr;
         g_controls_doc = nullptr;
@@ -4525,13 +6205,33 @@ namespace oot::ui::shell {
         g_capture_open = false;
         g_capture_settling = false;
         g_context = nullptr;
+        oot::ui::sound::stop();
         Rml::Shutdown();
         g_started = false;
     }
 
+    // THE LAYER DRAWS WHILE ANY DOCUMENT IS SHOWN, asked of the documents themselves (the user,
+    // 2026-10-14: "we shouldn't have any like hand-maintained anything"). It used to draw while one of
+    // a list showed: a page, the toast, the frame, the counter, the recorder plate, the splash. Photo
+    // mode's guide and the letterbox bars were never put on that list, so each stayed on screen only
+    // while something on it kept the layer drawing: the guide went with the toast, at the first camera
+    // move or a few seconds in, and with the header bar, and never while the counter or the recorder
+    // showed. Every document added from here on counts by being shown. RmlUi's Show and Hide update
+    // the document at once, so this is right on the frame a document comes or goes.
+    bool showing() {
+        if (g_context == nullptr) {
+            return false;
+        }
+        for (int i = 0; i < g_context->GetNumDocuments(); ++i) {
+            if (const Rml::ElementDocument* doc = g_context->GetDocument(i); doc != nullptr && doc->IsVisible()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool wants_draw() {
-        return g_started && (g_screen != Screen::None || g_hint_visible || frame_wants_draw() ||
-                             g_counter_shown || g_recorder_shown);
+        return g_started && showing();
     }
 
     void pump(int width, int height) {
@@ -4541,6 +6241,7 @@ namespace oot::ui::shell {
 
         // Every call is one presented frame: the frame rate counter counts them.
         poll_counter();
+        poll_guide();
         poll_letterbox();
         poll_recorder();
         poll_update();
@@ -4550,6 +6251,7 @@ namespace oot::ui::shell {
         if (width != g_width || height != g_height) {
             g_width = width;
             g_height = height;
+            g_resized = true;
             g_context->SetDimensions(Rml::Vector2i(width, height));
             scale_to_canvas();
             if (g_screen == Screen::Controls) {
@@ -4564,12 +6266,66 @@ namespace oot::ui::shell {
             else if (g_screen == Screen::Warps) {
                 cap_long_rows(g_warps_doc, "warp-rows", rows_cap(Screen::Warps));
             }
-            else if (g_screen == Screen::Settings || g_screen == Screen::Launch) {
+            else if (settings_like(g_screen) || g_screen == Screen::Launch) {
                 cap_long_rows(rows_doc(g_screen), rows_container(g_screen), rows_cap(g_screen));
             }
         }
 
+        // THE INTERFACE SIZE (phase 113): the scale the row and the window ask for, applied the frame
+        // it changes; the shell reflows and place_page moves the page into its new box.
+        {
+            // The row changed in the launcher: the launcher takes the new scale (launch.cpp, on the
+            // main thread), and a window that is not maximized takes the new size with it.
+            static int shaped_for = -1;
+            const int size_row = oot::ui::settings().interface_size;
+            if (!g_game_started && size_row != shaped_for) {
+                if (shaped_for >= 0) {
+                    launch::request_window_rows(1);
+                }
+                shaped_for = size_row;
+            }
+            int display_w = 1920;
+            int display_h = 1080;
+            launch::display_size(display_w, display_h);
+            const float dp = g_game_started ? oot::ui::interface_scale(size_row, g_width, g_height, display_w, display_h)
+                                            : launch::launcher_scale_now();
+            if (std::fabs(dp - g_context->GetDensityIndependentPixelRatio()) > 0.001f) {
+                g_context->SetDensityIndependentPixelRatio(dp);
+                g_resized = true;
+                // RmlUi recomputes the sizes written in dp but not the ones a child inherits from
+                // them: a row's label (the body's dp size, inherited) stayed at 100% beside a value
+                // at 150%. Each document's stylesheet applied again recomputes everything.
+                // Every document in the context, so one added later is never left out.
+                for (int i = 0; i < g_context->GetNumDocuments(); ++i) {
+                    Rml::ElementDocument* doc = g_context->GetDocument(i);
+                    if (doc != nullptr && oot::ui::settings().scale_reload != 0) {
+                        doc->ReloadStyleSheet();
+                    }
+                }
+                std::fprintf(stderr, "[ui] interface size %.0f%%\n", dp * 100.0f);
+                if (settings_like(g_screen) || g_screen == Screen::Launch) {
+                    cap_long_rows(rows_doc(g_screen), rows_container(g_screen), rows_cap(g_screen));
+                }
+            }
+            // The footer's prompts keep their 100% size below 100% (shell_model.h).
+            oot::ui::shell_model::hold_prompt_size(g_shell_doc, g_context->GetDensityIndependentPixelRatio());
+        }
+
+        // THE PAGE AFTER A RESIZE (the user, 2026-10-13: "changing window size makes all options
+        // disappear until i begin moving around the menu again"): refreshed and its focus put back
+        // in view, which is what a move did that brought them back. A Debugging toggle while it is
+        // a candidate (ui_settings.h).
+        if (g_resized) {
+            g_resized = false;
+            if (oot::ui::settings().resize_refresh != 0 && g_screen != Screen::None && g_screen != Screen::Ask) {
+                refresh_after_resize();
+            }
+        }
+
         drain();
+        poll_fading();
+        poll_inset();
+        poll_splash();
         // A LINE LEFT BY THE GAME THREAD, taken here because this is already the place that owns
         // the toast. The moments module says what happened and knows nothing about RmlUi; this
         // decides how it is shown. A quick save arrives when the file is actually written rather
@@ -4587,6 +6343,7 @@ namespace oot::ui::shell {
         if (!g_game_started && launch::game_started()) {
             g_game_started = true;
             g_launch_note.clear();
+            g_router.set_mode(menu::Mode::Game);
             show(Screen::None);
             frame_show();
             show_hint();
@@ -4595,13 +6352,20 @@ namespace oot::ui::shell {
             poll_frame();
         }
 
+        // The prompts follow the device in use from one input to the next (phase 96, 109).
+        const Device device = oot::ui::input::last_device();
+        if (device != g_prompt_device) {
+            g_prompt_device = device;
+            refresh_shell();
+        }
+
         if (g_screen == Screen::Launch) {
             // A ROM validated on the main thread since the rows were last written.
             const std::string now = rom_value() + "|" + rom_note();
             if (now != g_rom_seen) {
                 g_rom_seen = now;
                 g_launch_note.clear();
-                reflect_rows(Screen::Launch);
+                refresh_rows(Screen::Launch);
             }
             // The update check answers on its own thread, whenever it answers. It replaces the
             // key hints on the left of the foot and says nothing at all in every other case:
@@ -4628,14 +6392,31 @@ namespace oot::ui::shell {
     void draw(int width, int height) {
         (void)width;
         (void)height;
-        if (!g_started || g_context == nullptr ||
-            (g_screen == Screen::None && !g_hint_visible && !frame_wants_draw() &&
-             !g_counter_shown && !g_recorder_shown)) {
+        if (!wants_draw()) {
             return;
         }
 
         g_context->Update();
+        // The page goes into the shell's box once the box has its size, and again whenever it
+        // moves (a placement, a window size); that is one more update, on that frame only.
+        if (place_page()) {
+            g_context->Update();
+            apply_picture_inset(g_screen);
+        }
+        follow_rows_focus();
         g_context->Render();
+        // The window is shown once something has been drawn in it (launch.h), and the splash counts
+        // the frames drawn while it is actually on screen, for the pour.
+        launch::request_show_window();
+        if (g_splash == SplashState::Showing && launch::window_shown()) {
+            ++g_splash_frames;
+        }
+    }
+
+    void render_again() {
+        if (wants_draw()) {
+            g_context->Render();
+        }
     }
 
     void post_open(Screen screen) {
@@ -4743,6 +6524,10 @@ namespace oot::ui::shell {
 
     bool capturing_input() {
         return g_capturing.load(std::memory_order_relaxed);
+    }
+
+    uint32_t capture_releases() {
+        return g_capture_releases.load(std::memory_order_acquire);
     }
 
 } // namespace oot::ui::shell

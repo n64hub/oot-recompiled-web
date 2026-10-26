@@ -18,9 +18,9 @@
                     <div class="title">OoT: Recompiled</div>
                 </div>
                 <div class="chrome">
-                    <div class="win-btn" id="win-min"><div class="glyph-min"></div></div>
-                    <div class="win-btn" id="win-max"><div class="glyph-max"></div></div>
-                    <div class="win-btn" id="win-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                    <div class="win-btn" id="win-min"><svg class="win-ic" src="../icons/minus.svg"/></div>
+                    <div class="win-btn" id="win-max"><svg class="win-ic" src="../icons/square.svg"/></div>
+                    <div class="win-btn" id="win-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                 </div>
             </div>
 
@@ -32,7 +32,7 @@
                  the user asked the better question ("but can we not just add scrollable areas?"),
                  which is this. There is now no number here to get wrong, and a list longer than
                  the case scrolls instead of being cut off. -->
-            <div class="rows long" id="launch-rows"></div>
+            <div class="rows long" id="launch-rows" data-model="rows"></div>
 
             <!-- Play and Quit are ACTIONS, not settings, and the user asked twice for them to
                  look like it: out of the list, under a divider, Quit on the left as a secondary

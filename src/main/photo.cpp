@@ -1,7 +1,9 @@
 // Photo mode. See photo.h.
 #include "main/photo.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 
 #include "game/game_state.h"
@@ -18,7 +20,11 @@ namespace oot::photo {
         std::atomic<bool> g_picture_room{ false };
         std::atomic<bool> g_picture_said{ false };
         bool g_put_back_down = false;
-        std::atomic<bool> g_hud_hidden{ false };
+        // Photo mode's HUD: 0 shown, 1 dimmed, 2 hidden (photo.h).
+        std::atomic<int> g_hud_state{ 0 };
+        constexpr float HUD_DIM[] = { 0.20f, 0.35f, 0.50f, 0.65f, 0.80f };
+        // The button guide, hidden by its binding; kept for the run, not reset when photo mode ends.
+        std::atomic<bool> g_guide_hidden{ false };
 
         float amount(oot::input::GameInput input) {
             return oot::input::devices::input_amount(input);
@@ -37,7 +43,7 @@ namespace oot::photo {
     void toggle() {
         if (oot::shots::photo()) {
             oot::shots::set_photo(false);
-            g_hud_hidden.store(false, std::memory_order_relaxed);
+            g_hud_state.store(0, std::memory_order_relaxed);
             oot::moments::notice("Photo mode ended");
             return;
         }
@@ -47,6 +53,7 @@ namespace oot::photo {
         }
         g_picture_said.store(false, std::memory_order_relaxed);
         g_picture_room.store(false, std::memory_order_relaxed);
+        g_hud_state.store(std::clamp(oot::ui::settings().photo_hud, 0, 2), std::memory_order_relaxed);
         oot::shots::set_photo(true);
         oot::moments::notice("Photo mode: the game is frozen");
     }
@@ -57,7 +64,7 @@ namespace oot::photo {
         }
         if (!oot::ui::photo_mode_enabled() || !in_play()) {
             oot::shots::set_photo(false);
-            g_hud_hidden.store(false, std::memory_order_relaxed);
+            g_hud_state.store(0, std::memory_order_relaxed);
             return;
         }
         if (g_picture_room.load(std::memory_order_relaxed) && !g_picture_said.exchange(true, std::memory_order_relaxed)) {
@@ -92,13 +99,38 @@ namespace oot::photo {
         if (!oot::shots::photo()) {
             return;
         }
-        const bool hidden = !g_hud_hidden.load(std::memory_order_relaxed);
-        g_hud_hidden.store(hidden, std::memory_order_relaxed);
-        oot::moments::notice(hidden ? "Photo mode: HUD hidden" : "Photo mode: HUD shown");
+        const int next = (g_hud_state.load(std::memory_order_relaxed) + 1) % 3;
+        g_hud_state.store(next, std::memory_order_relaxed);
+        oot::moments::notice(next == 2 ? "Photo mode: HUD hidden" : next == 1 ? "Photo mode: HUD dimmed" : "Photo mode: HUD shown");
+    }
+
+    void toggle_guide() {
+        if (!oot::shots::photo()) {
+            return;
+        }
+        const bool hidden = !g_guide_hidden.load(std::memory_order_relaxed);
+        g_guide_hidden.store(hidden, std::memory_order_relaxed);
+        oot::moments::notice(hidden ? "Photo mode: button guide hidden" : "Photo mode: button guide shown");
+    }
+
+    bool guide_hidden() {
+        return g_guide_hidden.load(std::memory_order_relaxed);
     }
 
     bool hud_hidden() {
-        return oot::shots::photo() && g_hud_hidden.load(std::memory_order_relaxed);
+        return oot::shots::photo() && g_hud_state.load(std::memory_order_relaxed) == 2;
+    }
+
+    bool hud_dimmed() {
+        return oot::shots::photo() && g_hud_state.load(std::memory_order_relaxed) == 1;
+    }
+
+    uint32_t hud_opacity() {
+        if (!hud_dimmed()) {
+            return 256u;
+        }
+        const int step = std::clamp(oot::ui::settings().photo_hud_dim, 0, 4);
+        return static_cast<uint32_t>(std::lround(HUD_DIM[step] * 256.0f));
     }
 
     void note_picture_room(bool on) {

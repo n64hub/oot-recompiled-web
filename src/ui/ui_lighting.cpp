@@ -39,7 +39,7 @@ namespace {
         // as the camera turned: "add a setting to remove it or reduce it"). Game's own is the
         // console's culling; Near is the day's builds; Everything keeps every actor and every
         // room piece within its distance, at that cost.
-        // How many rays a lit pixel spends on the sun's disc, a moving surface twice that. The
+        // How many rays a lit pixel spends on each light, a moving surface twice that. The
         // soft edge of a shadow is where the noise lives, and one ray across a moving edge is
         // what painted the windmill's shadow (the user, 2026-09-24). More rays cost frame rate
         // and buy a cleaner edge, which is a person's trade to make.
@@ -102,8 +102,9 @@ namespace {
         { "outdoordustsize", "Outdoor dust size", { "Tiny", "Small", "Medium", "Large" }, 4 },
         { "wind",            "Wind",              { "Calm", "Breeze", "Wind", "Strong" }, 4 },
         { "windgusts",       "Wind gusts",        { "None", "Light", "Strong" }, 3 },
-        // Varied wanders round the compass on its own, with its own gusts and lulls (the user,
-        // 2026-10-08: "randomly choose a direction and randomly choose the strength of the gust").
+        // Varied wanders slowly round the compass on its own and sends each gust (Wind gusts) from
+        // any direction (the user, 2026-10-08: "randomly choose a direction and randomly choose
+        // the strength of the gust").
         { "winddirection",   "Wind from",         { "North", "East", "South", "West", "Varied" }, 5 },
         // Where the ambience's long fade with distance ends, indoors and outdoors each its own; it
         // always begins at a fifth of that (the user, 2026-10-08: "It still needs to be gradual
@@ -203,11 +204,10 @@ namespace {
         // brightest at the glass and fading with the distance the light has come, cut by what
         // stands in it. Appended, and shown under Glow size (rows_for in ui_shell.cpp). Off by
         // default, like everything that costs time (the user, 2026-10-08: "I want the defaults to
-        // just be off"). Drawn beam is the Debugging menu's: the game's own painted beam, which
-        // 0034/0039 hide where the windows give light, shown again beside the shafts to compare.
+        // just be off"). The game's own painted beam beside them is always drawn since 2026-10-12
+        // (renderer patch 0057); the Debugging row that hid it is gone.
         { "windowshafts",    "Window shafts",     { "Off", "Faint", "Soft", "Medium", "Strong", "Bright" }, 6 },
         { "shaftlength",     "Shaft length",      { "Short", "Medium", "Long", "Very long" }, 4 },
-        { "drawnbeam",       "Drawn beam",        { "Hidden (0.4.0)", "Shown" }, 2 },
         // 37 (2026-10-08) puts back the light effects as the game draws them before renderer
         // patches 0029 and 0030: a glowing shaft that lights nothing, the floor under the Temple
         // of Time's pedestal beam switching the whole scene brighter, the Sun's Song and the blue
@@ -231,6 +231,15 @@ namespace {
         // reflections at all. Rungs that can no longer do anything are the same defect as a
         // setting that does nothing, one level down, so they go. Everything below 31 is the
         // foliage work and keeps its number, so nothing a person might be sitting on moves.
+        //
+        // CANDIDATE FIXES (the user's standing rule of 2026-10-12: "temporary debugs with all fix
+        // possibilities as separate options so that i can enable or disable and mix and match ...
+        // once any of the stuff has been resolved, and confirmed, it can be removed from debug")
+        // are appended here with keys beginning "fix", which puts them on the Debugging menu
+        // (ui_shell.cpp, is_debug_lighting), and taken out again once a fix is confirmed. The ones
+        // of 2026-10-12 (the beams, the spawners, the Sun's Song, the free camera) and of 2026-10-21
+        // (the arrow and the hookshot: the actor heap, the spawners' memory, the hookshot guard) are
+        // folded in.
     };
 
     constexpr int ROW_COUNT = static_cast<int>(sizeof(ROWS) / sizeof(ROWS[0]));
@@ -375,7 +384,6 @@ namespace {
             // The windows' shafts, added at the end 2026-10-09.
             case 49: return &l.window_shafts;
             case 50: return &l.shaft_length;
-            case 51: return &l.drawn_beam;
             default: return nullptr;
         }
     }
@@ -469,8 +477,9 @@ namespace oot::ui::lighting {
         oot::renderer::LightingValues v;
 
         // The level is what the switches need, not a choice of its own: shadows want level 1,
-        // the occlusion and the lights level 2, the bounce, the reflections, the glow and the
-        // haze level 3. Off is off whatever else is on.
+        // the occlusion and the lights level 2, the bounce, the reflections, the glow, the haze,
+        // the dust and the window shafts level 3 (the scatter pass draws the last four). Off is
+        // off whatever else is on.
         int level = 0;
         if (l.raytracing != 0) {
             level = 1;
@@ -479,7 +488,8 @@ namespace oot::ui::lighting {
             }
             if (pick(BOUNCE, l.bounce) > 0.0f || pick(REFLECTIONS, l.reflections) > 0.0f ||
                 pick(GLOW, l.glow) > 0.0f || pick(HAZE, l.haze) > 0.0f ||
-                pick(DUST_DENSITY, l.indoor_dust) > 0.0f || pick(DUST_DENSITY, l.outdoor_dust) > 0.0f) {
+                pick(DUST_DENSITY, l.indoor_dust) > 0.0f || pick(DUST_DENSITY, l.outdoor_dust) > 0.0f ||
+                pick(SHAFTS, l.window_shafts) > 0.0f) {
                 level = 3;
             }
         }
@@ -534,7 +544,6 @@ namespace oot::ui::lighting {
         v.glow_test = l.glow_test;
         v.shaft_strength = pick(SHAFTS, l.window_shafts);
         v.shaft_length = pick(SHAFT_LENGTH, l.shaft_length);
-        v.drawn_beam = l.drawn_beam;
         return v;
     }
 

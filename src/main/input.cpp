@@ -3,6 +3,8 @@
 #include "main/input_bindings.h"
 #include "main/keyvalue.h"
 
+#include "ui_tokens.h"
+
 #include <SDL.h>
 
 #include <algorithm>
@@ -30,6 +32,9 @@ namespace oot::input::devices {
             // has gone active since the pump last asked.
             uint64_t edge_prev = 0;
             uint64_t edge_pending = 0;
+            // The left stick's four directions as the interface last read them (ui_pad), for
+            // the release threshold: a direction holds until the stick falls back past it.
+            uint32_t ui_stick = 0;
         };
 
         struct VirtualEvent {
@@ -651,6 +656,84 @@ namespace oot::input::devices {
         const uint64_t edges = pad.edge_pending;
         pad.edge_pending = 0;
         return edges;
+    }
+
+    bool ui_pad(int slot, UiPad& out) {
+        const std::shared_ptr<const Bindings> bindings = live();
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (slot < 0 || slot >= static_cast<int>(g_pads.size())) {
+            return false;
+        }
+        Pad& pad = g_pads[static_cast<size_t>(slot)];
+        out.instance = static_cast<int>(pad.instance);
+        out.kind = PadKind::Other;
+        if (pad.controller != nullptr) {
+            switch (SDL_GameControllerGetType(pad.controller)) {
+                case SDL_CONTROLLER_TYPE_XBOX360:
+                case SDL_CONTROLLER_TYPE_XBOXONE:
+                    out.kind = PadKind::Xbox;
+                    break;
+                case SDL_CONTROLLER_TYPE_PS3:
+                case SDL_CONTROLLER_TYPE_PS4:
+                    out.kind = PadKind::DualShock;
+                    break;
+                case SDL_CONTROLLER_TYPE_PS5:
+                    out.kind = PadKind::DualSense;
+                    break;
+                case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
+                case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+                case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+                case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+                    out.kind = PadKind::Nintendo;
+                    break;
+                default:
+                    break;
+            }
+        }
+        out.held = 0;
+        if (g_capture.status == CaptureStatus::Waiting) {
+            return true;
+        }
+
+        enum Bit { Up, Down, Left, Right, Accept, Back, Clear, Default, SectionPrev, SectionNext };
+        auto set = [&](Bit b, bool on) {
+            if (on) out.held |= uint32_t{ 1 } << b;
+        };
+        if (pad.controller != nullptr) {
+            const auto button = [&](SDL_GameControllerButton b) { return SDL_GameControllerGetButton(pad.controller, b) != 0; };
+            const float x = SDL_GameControllerGetAxis(pad.controller, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
+            const float y = SDL_GameControllerGetAxis(pad.controller, SDL_CONTROLLER_AXIS_LEFTY) / 32767.0f;
+            const auto stick = [&](Bit b, float v) {
+                const uint32_t m = uint32_t{ 1 } << b;
+                const bool was = (pad.ui_stick & m) != 0;
+                const bool now = was ? v >= oot::ui::tokens::stick_release : v >= oot::ui::tokens::stick_threshold;
+                pad.ui_stick = now ? (pad.ui_stick | m) : (pad.ui_stick & ~m);
+                return now;
+            };
+            set(Up, button(SDL_CONTROLLER_BUTTON_DPAD_UP) || stick(Up, -y));
+            set(Down, button(SDL_CONTROLLER_BUTTON_DPAD_DOWN) || stick(Down, y));
+            set(Left, button(SDL_CONTROLLER_BUTTON_DPAD_LEFT) || stick(Left, -x));
+            set(Right, button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || stick(Right, x));
+            set(Accept, button(SDL_CONTROLLER_BUTTON_A));
+            set(Back, button(SDL_CONTROLLER_BUTTON_B));
+            set(Clear, button(SDL_CONTROLLER_BUTTON_X));
+            set(Default, button(SDL_CONTROLLER_BUTTON_Y));
+            set(SectionPrev, button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+            set(SectionNext, button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+        }
+        else {
+            const InputBindings& map = map_for(profile_of(pad, *bindings));
+            const auto on = [&](GameInput i) { return input_active(pad, map, i); };
+            set(Up, on(GameInput::DUp) || on(GameInput::StickUp));
+            set(Down, on(GameInput::DDown) || on(GameInput::StickDown));
+            set(Left, on(GameInput::DLeft) || on(GameInput::StickLeft));
+            set(Right, on(GameInput::DRight) || on(GameInput::StickRight));
+            set(Accept, on(GameInput::A));
+            set(Back, on(GameInput::B));
+            set(SectionPrev, on(GameInput::L));
+            set(SectionNext, on(GameInput::R));
+        }
+        return true;
     }
 
     int pad_count() {

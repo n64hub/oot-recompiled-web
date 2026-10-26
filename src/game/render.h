@@ -156,12 +156,10 @@ namespace oot {
             int light_stone = 1;   // the user's pick, 2026-10-08: stops at stone, the glow in the air passes
             int glow_test = 0;
             // The windows' shafts (renderer patch 0051): the air's brightness per world unit of
-            // beam (0 off), the fade's length as a share of each window's fall (renderer patch
-            // 0052), and the game's drawn beam shown again.
+            // beam (0 off) and the fade's length as a share of each window's fall (renderer patch
+            // 0052). The game's drawn beam is always shown (renderer patch 0057).
             float shaft_strength = 0.0f;
-            float shaft_length = 0.45f;
-            int drawn_beam = 0;
-            // The Shadow rays row (2026-09-24): samples over the sun's disc per lit pixel, a
+            float shaft_length = 0.45f;            // The Shadow rays row (2026-09-24): samples over the sun's disc per lit pixel, a
             // moving surface twice that. One is the console's look and the noisiest.
             int shadow_rays = 4;
             // The Indoor light row (2026-09-24): a sun of our own where the place has no sky,
@@ -220,6 +218,9 @@ namespace oot {
         // side panel, 2026-09-24): the renderer scales the whole picture, ratio kept, into the
         // rest and stands it there. Zero and zero puts it back. Any thread.
         void set_picture_inset(int left, int right);
+        // The inset last set, for a picture of the window drawn again at a size of its own, which
+        // puts the game's picture where the window has it (ui_render.cpp). Any thread.
+        void picture_inset(int& left, int& right);
 
         // The texture pack the person chose, or an empty path for none (2026-09-30). RT64 does
         // the whole job: it reads the pack's own rt64.json and swaps a texture by its hash as

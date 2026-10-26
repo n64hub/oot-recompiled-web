@@ -79,13 +79,17 @@ extern "C" void recomp_caster_reach(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_letterbox(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_traced_light_effects(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_glow_test(uint8_t* rdram, recomp_context* ctx);
-extern "C" void recomp_window_rays_hidden(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_note_actors(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_photo_mode(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_menu_hold(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_menu_music_level(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_menu_sound_next(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_photo_picture_room(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_photo_input(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_photo_hud_hidden(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_hud_note(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_hud_part(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_hud_targeting(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_hud_layout(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_hud_place(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_hud_frame_q16(uint8_t* rdram, recomp_context* ctx);
@@ -350,10 +354,14 @@ int main(int argc, char** argv) {
     recomp::overlays::register_base_export("recomp_traced_light_effects", recomp_traced_light_effects);
     // The Glow test row (patches/light_glow.c).
     recomp::overlays::register_base_export("recomp_glow_test", recomp_glow_test);
-    // The painted rays through the Temple of Time's side windows (patches/window_rays.c).
-    recomp::overlays::register_base_export("recomp_window_rays_hidden", recomp_window_rays_hidden);
-    // Photo mode (patches/photo_mode.c, patches/photo_audio.c).
+    // How full the scene is and where the Sun's Song stands, for the log (patches/actor_note.c).
+    recomp::overlays::register_base_export("recomp_note_actors", recomp_note_actors);    // Photo mode (patches/photo_mode.c, patches/photo_audio.c).
     recomp::overlays::register_base_export("recomp_photo_mode", recomp_photo_mode);
+    // The menu holds the game (the menus plan, phase 97; patches/menu_music.c reads it).
+    recomp::overlays::register_base_export("recomp_menu_hold", recomp_menu_hold);
+    recomp::overlays::register_base_export("recomp_menu_music_level", recomp_menu_music_level);
+    // The game's own sounds for the menus (phase 112; patches/menu_sounds.c).
+    recomp::overlays::register_base_export("recomp_menu_sound_next", recomp_menu_sound_next);
     recomp::overlays::register_base_export("recomp_photo_picture_room", recomp_photo_picture_room);
     recomp::overlays::register_base_export("recomp_photo_input", recomp_photo_input);
     recomp::overlays::register_base_export("recomp_photo_hud_hidden", recomp_photo_hud_hidden);
@@ -363,6 +371,7 @@ int main(int argc, char** argv) {
     recomp::overlays::register_base_export("recomp_hud_layout", recomp_hud_layout);
     recomp::overlays::register_base_export("recomp_hud_place", recomp_hud_place);
     recomp::overlays::register_base_export("recomp_hud_frame_q16", recomp_hud_frame_q16);
+    recomp::overlays::register_base_export("recomp_hud_targeting", recomp_hud_targeting);
     // The actors that moved through the air (patches/air_movers.c).
     recomp::overlays::register_base_export("recomp_air_movers", recomp_air_movers);
     // The painted elements of the rooms where the player is (patches/room_pieces.c).
@@ -400,7 +409,6 @@ int main(int argc, char** argv) {
 
     const auto& game = oot::game_entry();
     std::printf("Game: %s\n", game.display_name.c_str());
-    std::printf("  internal name  %s\n", game.internal_name.c_str());
     std::printf("  rom hash       0x%016llX\n", static_cast<unsigned long long>(game.rom_hash));
     std::printf("  entrypoint     0x%08X\n", static_cast<unsigned int>(game.entrypoint_address));
     std::printf("  entry fn       %s\n\n", game.entrypoint != nullptr ? "linked" : "MISSING");

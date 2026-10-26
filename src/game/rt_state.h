@@ -35,12 +35,6 @@ namespace oot::rt_state {
     // Sun's Song and the blue warp (patches/effect_lights.c).
     bool light_effects_traced();
 
-    // Whether the windows' traced shafts stand in for the game's painted rays through the Temple
-    // of Time's side windows (patches/window_rays.c, 2026-10-09): the traced light effects stand,
-    // the Window shafts row is on, and the Debugging menu's Drawn beam row is not showing the
-    // game's own again. Read once a frame from the game thread.
-    bool window_rays_hidden();
-
     // The Debugging menu's Glow test row (2026-10-08): 0 and 1 draw each point light's glow inside
     // the renderer's depth test at the light's center (patches/light_glow.c), 2 and 3 draw it as
     // the game did. The renderer reads the same row for whether it also tests per pixel (renderer

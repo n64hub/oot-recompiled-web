@@ -45,6 +45,9 @@ extern s16 sLensFlareUnused;
 extern Gfx gSunDL[];
 extern Gfx gMoonDL[];
 
+// 1 while the program holds the game: a menu over it, photo mode, a comparison (src/main/shots.h).
+s32 recomp_harness_frozen(void);
+
 // A fixed thing's group on the opaque list: interpolated, or held on a cut.
 static Gfx* tag_fixed_opa(Gfx* dlist, u32 id) {
     if (camera_was_skipped()) {
@@ -160,16 +163,25 @@ RECOMP_PATCH void Environment_DrawSunAndMoon(PlayState* play) {
     OPEN_DISPS(play->state.gfxCtx, "../z_kankyo.c", 2266);
 
     if (play->csCtx.state != CS_STATE_IDLE) {
-        Math_SmoothStepToF(&play->envCtx.sunPos.x,
-                           -(Math_SinS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f,
-                           1.0f, 0.8f, 0.8f);
-        Math_SmoothStepToF(&play->envCtx.sunPos.y,
-                           (Math_CosS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f, 1.0f,
-                           0.8f, 0.8f);
-        //! @bug This should be z.
-        Math_SmoothStepToF(&play->envCtx.sunPos.y,
-                           (Math_CosS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 20.0f) * 25.0f, 1.0f,
-                           0.8f, 0.8f);
+        // @recomp NOT WHILE THE PROGRAM HOLDS THE GAME (2026-10-22; the user, on the title screen: "about a
+        // five second delay on the pausing of the moon ... yet link pauses immediately on open"). In a
+        // cutscene the sun and the moon ease toward the time of day here, in the draw, 0.8 a frame, and
+        // the title's cutscene runs the clock fast, so the moon trails its place. The hold (a menu,
+        // photo mode) stops the update and the clock with it but goes on drawing, so the moon went on
+        // easing until it caught up. Held, it stays where it is; not set straight to its place either,
+        // which would make it jump.
+        if (!recomp_harness_frozen()) {
+            Math_SmoothStepToF(&play->envCtx.sunPos.x,
+                               -(Math_SinS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f,
+                               1.0f, 0.8f, 0.8f);
+            Math_SmoothStepToF(&play->envCtx.sunPos.y,
+                               (Math_CosS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f, 1.0f,
+                               0.8f, 0.8f);
+            //! @bug This should be z.
+            Math_SmoothStepToF(&play->envCtx.sunPos.y,
+                               (Math_CosS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 20.0f) * 25.0f, 1.0f,
+                               0.8f, 0.8f);
+        }
     } else {
         play->envCtx.sunPos.x = -(Math_SinS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f;
         play->envCtx.sunPos.y = +(Math_CosS(((void)0, gSaveContext.save.dayTime) - CLOCK_TIME(12, 0)) * 120.0f) * 25.0f;

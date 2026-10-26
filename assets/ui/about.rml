@@ -17,7 +17,7 @@
                         <div class="title">OoT: Recompiled</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <div class="hint">Up and down scroll, Escape or the pad's B closes</div>
@@ -80,6 +80,11 @@
                     <span class="name">Certificate valid</span>
                     <span class="datum" id="about-valid"></span>
                 </div>
+
+                <!-- Credits (the menus plan, phase 106): every bundled face and icon set with its
+                     license, read from assets/licenses/MANIFEST.txt at run time. -->
+                <div class="heading">Credits</div>
+                <div id="about-credits"></div>
 
                 <div class="heading">Changes</div>
 

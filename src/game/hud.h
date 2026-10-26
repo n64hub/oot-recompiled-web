@@ -29,6 +29,7 @@ namespace oot::hud {
         AnyButton = 1u << 5,      // any button pressed this update
         HealthLow = 1u << 6,      // health is critical
         Paused = 1u << 7,         // the pause menu is open
+        MapToggled = 1u << 8,     // the minimap shown or hidden this update
     };
 
     // Once an update, before the HUD is drawn.
@@ -54,5 +55,9 @@ namespace oot::hud {
     // The frame's width over the console's 320, 16.16 fixed point (render.h, frame_aspect): what
     // a custom place's percent across is a share of.
     uint32_t frame_q16();
+
+    // THE TARGETING ARROWS (2026-10-13, the HUD menu's Targeting rows): bit 0 set hides the lock-on
+    // arrows around what Z holds, bit 1 the marker over what can be targeted.
+    uint32_t targeting();
 
 } // namespace oot::hud

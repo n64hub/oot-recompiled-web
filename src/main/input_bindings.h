@@ -63,6 +63,15 @@ namespace oot::input {
         PhotoRaise, PhotoLower, PhotoCloser, PhotoFurther, PhotoReset,
         // The game's HUD shown or hidden while photo mode holds the game (2026-10-09).
         PhotoHud,
+        // PHOTO MODE'S BUTTON GUIDE shown or hidden (the user, 2026-10-13: "they need a button to be
+        // able to hide that from view ... it would just be a separate control to hide the photo mode
+        // controls"). In the Photo mode section with the rest; inputs are saved by name, so the
+        // number every later input moves up by is never written down.
+        PhotoGuide,
+        // A PICTURE IN PHOTO MODE (the user, 2026-10-13: "do we not have a default button for taking a photo in photo
+        // mode?"): the Screenshot control's picture, on a button only photo mode reads, so a pad has one by default
+        // without the Screenshot control firing in play.
+        PhotoShot,
         // The HUD's fading (game/hud.h): brings the HUD back, or fades it, as HUD fades says. The
         // game's own, so the controls screen lists it before the Photo mode section.
         HudToggle,
@@ -75,9 +84,32 @@ namespace oot::input {
     // Photo mode's own rows, the toggle and its camera, which the controls screen sets apart.
     constexpr bool is_photo_input(GameInput input) {
         return static_cast<int>(input) >= static_cast<int>(GameInput::PhotoMode) &&
-               static_cast<int>(input) <= static_cast<int>(GameInput::PhotoHud);
+               static_cast<int>(input) <= static_cast<int>(GameInput::PhotoShot);
     }
     constexpr int BINDINGS_PER_INPUT = 2;
+
+    // Where an input is read (src/main/boot.cpp): the game's own and the HUD's fading in play, the
+    // camera and its controls while photo mode holds the game, and the program's (the menu, the quick
+    // keys, the pictures, the video, photo mode itself) in both.
+    enum : unsigned { READ_IN_PLAY = 1, READ_IN_PHOTO = 2 };
+    constexpr unsigned read_in(GameInput input) {
+        if (input == GameInput::HudToggle) return READ_IN_PLAY;
+        if (input == GameInput::PhotoMode) return READ_IN_PLAY | READ_IN_PHOTO;
+        if (is_photo_input(input)) return READ_IN_PHOTO;
+        if (static_cast<int>(input) >= static_cast<int>(GameInput::Menu)) return READ_IN_PLAY | READ_IN_PHOTO;
+        return READ_IN_PLAY;
+    }
+
+    // THE ORDER A PRESS IS ACTED ON (boot.cpp: the key path and handle_pad_edges both go in this order,
+    // and stop at the first that takes it): a key or button bound to two of these reaches only the
+    // first, where both are read. Photo mode's camera is read while held, not here. A prompt shows a
+    // binding only where a press reaches its control (the user, 2026-10-13: "show both of them but only
+    // in the event that both of them actually work within the context"). Change either together.
+    constexpr GameInput DISPATCH_ORDER[] = {
+        GameInput::Menu, GameInput::QuickSave, GameInput::QuickLoad, GameInput::Screenshot, GameInput::RecordVideo,
+        GameInput::PauseVideo, GameInput::PhotoMode, GameInput::PhotoHud, GameInput::PhotoGuide, GameInput::PhotoShot,
+        GameInput::HudToggle,
+    };
 
     enum class FieldKind : int {
         None,

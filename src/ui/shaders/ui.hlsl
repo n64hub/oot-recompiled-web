@@ -17,6 +17,14 @@ struct UiConstants {
     // x is the time in seconds since the interface came up, for the mark's gleam. The rest is
     // spare and zero.
     float4 mark;
+    // A gradient decorator's own (the menus plan, phase 87); zero for every other draw.
+    // gradient: xy the start (linear) or center (radial), zw the direction (linear) or the
+    //           reciprocal radius (radial), in the geometry's texture coordinates
+    // gradient_fn: x 1 linear, 2 radial; y 1 when repeating; z, w the ramp's first and last position
+    // gradient_rep: x, y the first and last stop, the span a repeating gradient repeats over
+    float4 gradient;
+    float4 gradient_fn;
+    float4 gradient_rep;
 };
 
 [[vk::push_constant]] ConstantBuffer<UiConstants> gConstants : register(b0);
@@ -46,6 +54,26 @@ PSInput VSMain(VSInput input) {
 
 float4 PSMain(PSInput input) : SV_TARGET {
     return input.color * gTexture.Sample(gSampler, input.uv);
+}
+
+// RmlUi's gradient decorators (the menus plan, phase 87). Each pixel's place along the gradient,
+// t, is found exactly as RmlUi's reference renderer finds it, from the geometry's texture
+// coordinates; the colors at every t were baked into the bound ramp when the decorator compiled
+// (src/ui/ui_gradient.cpp), with the reference's own smoothstep blending between stops.
+float4 PSGradient(PSInput input) : SV_TARGET {
+    const float4 g = gConstants.gradient;
+    const float4 fn = gConstants.gradient_fn;
+    const float2 V = input.uv - g.xy;
+    float t = (fn.x < 1.5f) ? dot(g.zw, V) / max(dot(g.zw, g.zw), 1e-6f) : length(g.zw * V);
+    if (fn.y > 0.5f) {
+        const float t0 = gConstants.gradient_rep.x;
+        const float span = max(gConstants.gradient_rep.y - t0, 1e-6f);
+        t = t0 + (t - t0) - span * floor((t - t0) / span);
+    }
+    // To the ramp's texel centers, so the ends never blend with the texture's own edge.
+    const float u = saturate((t - fn.z) / max(fn.w - fn.z, 1e-6f));
+    const float x = (u * 1023.0f + 0.5f) / 1024.0f;   // RAMP_WIDTH in ui_gradient.h
+    return input.color * gTexture.SampleLevel(gSampler, float2(x, 0.5f), 0.0f);
 }
 
 // ----------------------------------------------------------------------------------------------

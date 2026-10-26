@@ -17,7 +17,7 @@
                         <div class="title">Moments</div>
                     </div>
                     <div class="chrome">
-                        <div class="win-btn" id="modal-close"><div class="glyph-x"><div class="bar a"></div><div class="bar b"></div></div></div>
+                        <div class="win-btn" id="modal-close"><svg class="win-ic" src="../icons/x.svg"/></div>
                     </div>
                 </div>
                 <div class="hint">Up and down to choose, Enter takes you to the buttons, left and right between them, Escape or the pad's B goes back</div>
@@ -30,11 +30,13 @@
             <div class="rows long" id="moment-rows"></div>
 
             <!-- Save here writes the focused slot (in play only; the launcher offers Resume alone),
-                 Resume loads it, Delete removes it. Nothing here is one click from losing progress:
-                 Delete asks twice, the same way Remove everything does. Two to a row (case.rcss,
-                 .pairs), so none of the four is crushed in the panel. -->
+                 Resume loads it, Delete removes it, Mark as reserved moves it where nothing writes
+                 over it (and Unreserve back). Nothing here is one click from losing progress:
+                 Delete asks twice, the same way Uninstall does. Two to a row (case.rcss,
+                 .pairs), so none of them is crushed in the panel; Cancel alone across the foot. -->
             <div class="actions pairs">
                 <div class="act-btn act-quit" id="moments-delete"><span class="act-label" id="moments-delete-label">Delete</span></div>
+                <div class="act-btn act-quit" id="moments-reserve"><span class="act-label" id="moments-reserve-label">Mark as reserved</span></div>
                 <div class="act-btn act-quit" id="moments-save"><span class="act-label" id="moments-save-label">Save here</span></div>
                 <div class="act-btn act-play" id="moments-load"><span class="act-label" id="moments-load-label">Load</span></div>
                 <div class="act-btn" id="moments-cancel"><span class="act-label">Cancel</span></div>

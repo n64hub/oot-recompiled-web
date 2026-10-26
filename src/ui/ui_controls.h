@@ -20,8 +20,18 @@ namespace oot::ui::controls {
     };
 
     // Re-read the pads and rebuild the rows. Called when the document opens and whenever a pad
-    // comes or goes. The selected device is kept when it is still there.
+    // comes or goes. The selected device is kept when it is still there; when the selected pad has
+    // gone (pulled out while the page is open), the device in use is selected instead, or the
+    // keyboard (the user, 2026-10-13: "if the user switched to the screen with controller but then
+    // the controller becomes disconnected, it WOULD switch while they view the page").
     void refresh();
+
+    // THE DEVICE IN USE, SELECTED AS THE PAGE OPENS (the user, 2026-10-13: "have the device
+    // selection be what the user is currently using when they navigate to it ... it must only
+    // affect the selection before navigating to it"): the pad by SDL's instance id, or the
+    // keyboard for -1 (the keyboard or the mouse in use). Called once, on the way in; input on the
+    // page never calls it.
+    void select_in_use(int pad_instance);
 
     // The keyboard, then every connected pad by slot.
     int device_count();

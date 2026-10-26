@@ -66,6 +66,12 @@ namespace oot::launch {
     void request_minimize();
     // Size the launcher window to a document's own list length, as that document opens.
     void request_window_rows(int rows);
+    // The launcher window's scale (the Interface size row, phase 113): the shell draws at it.
+    float launcher_scale_now();
+
+    // The size of the display the window is on, read on the main thread each tick; 1920 by 1080
+    // until it is known. The game's menus take Automatic's step from it (ui_settings.h).
+    void display_size(int& width, int& height);
 
     // How much of the launcher's window is NOT the row list: the lid, the action bar and the
     // foot. The same number `request_window_rows` sizes the window with.
@@ -87,6 +93,19 @@ namespace oot::launch {
     // original is never moved, changed or deleted.
     void request_keep_rom_copy();
     void request_maximize();
+
+    // THE LAUNCHER'S WINDOW IS SHOWN ONCE THE SPLASH HAS BEEN DRAWN (the user, 2026-10-13, yes to
+    // keeping it hidden: the window had shown as a black rectangle while the renderer started).
+    // Boot holds it hidden; the interface asks for it to be shown after its first frame; the main
+    // thread shows it. If nothing asks within a few seconds (no renderer, no splash), it is shown
+    // anyway, so the program never runs without a window.
+    void hold_window_hidden();
+    void request_show_window();
+    // The launcher's window maximized as the launcher takes over from the splash (the user,
+    // 2026-10-13). The main thread does it; nothing once the game has the window.
+    void request_maximize_launcher();
+    // True once the window is on screen (always true when it was never held).
+    bool window_shown();
 
     // True once the game has been started, by Play or by --play.
     bool game_started();

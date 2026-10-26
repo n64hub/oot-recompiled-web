@@ -80,12 +80,13 @@ namespace oot::video {
                        uint64_t& index);
 
     // Where this recording's pictures come from (the Video shows row, fixed when it starts): the
-    // whole window, the swap chain after the program's interface is drawn over the game, or the
-    // game's picture alone, drawn again at the recording's size (renderer patch 0053).
+    // whole window, drawn again at the recording's size with the program's interface over the game
+    // (ui_render.cpp, the window at its own size, 2026-10-14), or the game's picture alone, drawn
+    // again at the recording's size (renderer patch 0053). Both arrive at the recording's size.
     bool records_window();
 
     // A recorded picture: B, G, R, A, `pitch` bytes a row, `width` by `height` (the recording's
-    // size, or the window's to be scaled to it), in memory that stays readable until `done` is
+    // size, or anything else to be scaled to it), in memory that stays readable until `done` is
     // called. `done` is called exactly once, from the encoder's thread or from here, whether or not
     // the picture was used.
     void submit_picture(const uint8_t* bgra, uint32_t pitch, uint32_t width, uint32_t height, uint64_t index,

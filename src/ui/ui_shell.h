@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace Rml {
@@ -21,6 +22,11 @@ namespace oot::ui::shell {
     // fonts live; nothing is loaded yet, because there is no device until RT64 makes one.
     void configure(const std::string& assets_dir, const std::string& settings_path);
 
+    // Writes every rows document's rows, under the defaults and under the choices that bring rows
+    // in and out, one line a row (--ui-rows-dump, the menus plan, phase 95). Prints ROWS_DUMP_OK
+    // or ROWS_DUMP_FAIL and returns the exit code.
+    int dump_rows(const std::string& path);
+
     // Called by the render hook once the device side is up, on the render thread.
     void on_renderer_ready(Rml::RenderInterface* renderer);
     void on_renderer_gone();
@@ -30,12 +36,18 @@ namespace oot::ui::shell {
     // `draw`: the command that opens a screen would then be waiting on the screen being open.
     void pump(int width, int height);
 
-    // Is there anything to draw? Checked after the pump and before the framebuffer is bound, so an
-    // interface that is closed costs one predicted branch per frame. The startup hint counts.
+    // Is there anything to draw? Checked after the pump and before the framebuffer is bound: whether
+    // any document is shown, asked of the documents themselves, so a closed interface costs a look
+    // at a couple of dozen flags per frame and nothing has to be added to a list to be drawn.
     bool wants_draw();
 
     // Called inside the render hook with the framebuffer bound.
     void draw(int width, int height);
+
+    // The interface drawn again exactly as `draw` left it, nothing updated, laid out or moved: for a
+    // picture of the window at a size of its own, into whatever the render hook has bound
+    // (ui_render.cpp). Called inside the render hook, after `draw`.
+    void render_again();
 
     // ------------------------------------------------------------------------------------------
     // Posted from the game's thread. None of these touch RmlUi.
@@ -59,7 +71,10 @@ namespace oot::ui::shell {
     // the frame recorder and its length, the warps, the lighting sweep, and the two lighting rows
     // that replace the picture with one pass of it. It is reached through a confirmation, never
     // straight from a row (the user, 2026-09-26).
-    enum class Screen { None, Settings, About, Controls, Launch, Browse, Files, Ask, Warps, Moments, Lighting, Debug, Hud };
+    // Graphics, Gameplay, Capture and its Photo and Video pages are the settings split out of the
+    // one long list (2026-10-13); they are drawn by the settings document.
+    enum class Screen { None, Settings, About, Controls, Launch, Browse, Files, Ask, Warps, Moments, Lighting, Debug, Hud,
+                        Graphics, Gameplay, Capture, Photo, Video };
 
     void post_open(Screen screen);
     void post_close();
@@ -71,7 +86,9 @@ namespace oot::ui::shell {
 
     // A key or a pad button, already translated to something the interface understands. Returns
     // true if the interface wanted it, in which case the game should not also act on it.
-    enum class Nav { Up, Down, Left, Right, Accept, Back, Clear };
+    // Default (restore a row's default) and the section changes arrive from the input stream
+    // (ui/input/, the menus plan, phase 90); the screens that predate the shell ignore them.
+    enum class Nav { Up, Down, Left, Right, Accept, Back, Clear, Default, SectionPrev, SectionNext };
     bool post_nav(Nav nav);
 
     // Any press at all, from the pump. The startup hint goes on the first one.
@@ -103,5 +120,9 @@ namespace oot::ui::shell {
     // True while a document is open, so the game's input can be held back. The hint is not a
     // document in this sense: it takes nothing.
     bool capturing_input();
+
+    // How many times a document has let the input go: a count, so the game's input can tell a menu
+    // closed even when it read nothing while the menu was open (the game is held then).
+    uint32_t capture_releases();
 
 } // namespace oot::ui::shell

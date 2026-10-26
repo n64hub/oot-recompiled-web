@@ -19,6 +19,8 @@
 // with it too.
 #include "xxHash/xxh3.h"
 
+#include "game/game.h"
+
 namespace oot::rom {
 
     namespace {
@@ -100,10 +102,11 @@ namespace oot::rom {
             }
         }
 
-        // The internal name sits at 0x20 in the header. Only read once the file is known to be
-        // long enough, which the size check below guarantees.
-        std::string_view internal_name_of(const std::vector<uint8_t>& bytes, size_t length) {
-            return std::string_view{ reinterpret_cast<const char*>(bytes.data()) + 0x20, length };
+        // Whether the header's name is this game's, by its hash (game.h). Only read once the file
+        // is known to be long enough, which the size check below guarantees.
+        bool header_name_matches(const std::vector<uint8_t>& bytes) {
+            return oot::fnv1a64(bytes.data() + oot::ROM_HEADER_NAME_OFFSET, oot::ROM_HEADER_NAME_LENGTH) ==
+                   oot::ROM_HEADER_NAME_FNV1A;
         }
 
     } // namespace
@@ -114,6 +117,16 @@ namespace oot::rom {
         contents.clear();
 
         std::vector<uint8_t> bytes = read_whole_file(path);
+        if (bytes.empty()) {
+            return recomp::RomValidationError::FailedToOpen;
+        }
+        return validate_bytes(std::move(bytes), entry, contents);
+    }
+
+    recomp::RomValidationError validate_bytes(std::vector<uint8_t> bytes,
+                                              const recomp::GameEntry& entry,
+                                              std::vector<uint8_t>& contents) {
+        contents.clear();
         if (bytes.empty()) {
             return recomp::RomValidationError::FailedToOpen;
         }
@@ -139,8 +152,8 @@ namespace oot::rom {
             // A header long enough to hold the name, or there is nothing to tell the user beyond
             // "not this game". The runtime reads this offset without checking; a truncated file
             // reaching here would read past the end, so the length is checked first.
-            const size_t needed = 0x20 + entry.internal_name.size();
-            if (bytes.size() >= needed && internal_name_of(bytes, entry.internal_name.size()) == entry.internal_name) {
+            const size_t needed = oot::ROM_HEADER_NAME_OFFSET + oot::ROM_HEADER_NAME_LENGTH;
+            if (bytes.size() >= needed && header_name_matches(bytes)) {
                 return recomp::RomValidationError::IncorrectVersion;
             }
             return recomp::RomValidationError::IncorrectRom;
@@ -148,6 +161,42 @@ namespace oot::rom {
 
         contents = std::move(bytes);
         return recomp::RomValidationError::Good;
+    }
+
+    int selftest(const std::filesystem::path& rom, const recomp::GameEntry& entry) {
+        const auto fail = [](const char* what) {
+            std::fprintf(stderr, "ROM_SELFTEST_FAILED: %s\n", what);
+            return 1;
+        };
+        const std::vector<uint8_t> original = read_whole_file(rom);
+        if (original.empty()) return fail("the ROM given could not be read");
+        std::vector<uint8_t> contents;
+
+        // The user's own ROM is this game, as it is on disk.
+        if (validate_bytes(original, entry, contents) != recomp::RomValidationError::Good) return fail("the right ROM was refused");
+
+        // One byte changed past the header: still this game's name, another revision.
+        std::vector<uint8_t> revision = original;
+        revision[revision.size() / 2] ^= 0xFF;
+        if (validate_bytes(revision, entry, contents) != recomp::RomValidationError::IncorrectVersion) {
+            return fail("a changed byte past the header did not read as another revision");
+        }
+
+        // One letter of the header's name changed: a different game entirely.
+        std::vector<uint8_t> other = revision;
+        other[oot::ROM_HEADER_NAME_OFFSET] ^= 0x01;
+        if (validate_bytes(other, entry, contents) != recomp::RomValidationError::IncorrectRom) {
+            return fail("a different header name did not read as another game");
+        }
+
+        // A header too short to hold the name is another game, and is not read past its end.
+        const std::vector<uint8_t> stub(original.begin(), original.begin() + 0x24);
+        if (validate_bytes(stub, entry, contents) != recomp::RomValidationError::IncorrectRom) {
+            return fail("a file too short for the name was not another game");
+        }
+
+        std::printf("ROM_SELFTEST_OK\n");
+        return 0;
     }
 
     std::filesystem::path remembered(const std::filesystem::path& directory) {

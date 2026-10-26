@@ -1,5 +1,6 @@
 // The video recorder. See video.h.
 #include "main/video.h"
+#include "main/capture_size.h"
 
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -48,9 +49,6 @@ namespace oot::video {
         // Media Foundation counts time in hundreds of nanoseconds.
         constexpr int64_t TICKS_PER_SECOND = 10'000'000;
 
-        // The Video size row's heights after "Match the window", which is 0 (ui_settings.cpp holds
-        // the labels; this is the arithmetic only).
-        constexpr uint32_t HEIGHTS[] = { 0, 720, 1080, 1440, 2160 };
         // The Video quality row as bits per pixel per frame, which makes the bit rate follow the
         // size: at 1080p sixty, 6, 12, 20 and 37 megabits a second. Standard is about what the
         // video sites ask for; Best is several times it, for a file that is edited again.
@@ -138,24 +136,12 @@ namespace oot::video {
             return std::chrono::duration_cast<std::chrono::nanoseconds>(d).count();
         }
 
-        // The recording's size: the Video size row's height at the window's shape, or the window's
-        // own size, even in both directions (the picture's color is shared by pairs of pixels)
-        // and inside the encoders' ceiling.
+        // The recording's size: the Video size row's choice (main/capture_size.h), even in both
+        // directions (the picture's color is shared by pairs of pixels) and inside the encoders'
+        // ceiling.
         void recording_size(uint32_t window_width, uint32_t window_height, uint32_t& width, uint32_t& height) {
-            const int step = std::clamp(oot::ui::settings().video_size, 0, static_cast<int>(std::size(HEIGHTS)) - 1);
-            const double aspect = (window_height > 0) ? static_cast<double>(window_width) / static_cast<double>(window_height) : 16.0 / 9.0;
-            double h = (step == 0) ? static_cast<double>(window_height) : static_cast<double>(HEIGHTS[step]);
-            double w = h * aspect;
-            if (w > MAX_WIDTH) {
-                w = MAX_WIDTH;
-                h = w / aspect;
-            }
-            if (h > MAX_HEIGHT) {
-                h = MAX_HEIGHT;
-                w = h * aspect;
-            }
-            width = std::max<uint32_t>(64u, static_cast<uint32_t>(std::lround(w)) & ~1u);
-            height = std::max<uint32_t>(64u, static_cast<uint32_t>(std::lround(h)) & ~1u);
+            oot::capture::size_at(oot::ui::settings().video_size, window_width, window_height, MAX_WIDTH, MAX_HEIGHT,
+                                  width, height);
         }
 
         uint32_t bitrate_for(uint32_t width, uint32_t height) {

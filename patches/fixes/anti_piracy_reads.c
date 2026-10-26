@@ -7,7 +7,7 @@
 //   1. The bars of Ganon's Tower during the collapse (`func_808C0CD4`, z_bg_zg.c) read the word
 //      at physical 0x2E8 through the uncached view, `IO_READ(0x000002E8)`, and refuse to open
 //      unless it holds an instruction the boot ROM's own RSP code leaves there.
-//   2. Zelda's hair (`func_80B4FEA4`, z_en_zl2.c) is drawn misshapen unless `osCicId` is 6105.
+//   2. One character's hair (`func_80B4FEA4`, z_en_zl2.c) is drawn misshapen unless `osCicId` is 6105.
 //   3. The fishing pond (`Fishing_Init`, z_fishing.c) locks the reel unless `gCICBootMagic0`,
 //      which the boot code reads from physical 0x2FB1F4, holds the value the boot ROM deposits.
 //
@@ -24,7 +24,7 @@
 //     recompiler configuration stubs, because it reads what only a boot ROM leaves, so
 //     `gCICBootMagic0` stays zero and the fishing pond locks its reel for as long as the game runs.
 //   - `osCicId` is an ordinary variable the application deposits before the game's first
-//     instruction (src/game/game_init.cpp), so Zelda's hair is drawn as drawn.
+//     instruction (src/game/game_init.cpp), so that hair is drawn as drawn.
 //
 // THE FIX for the bars is the decompilation's own non-console body: the check is dropped and
 // the function otherwise does what it always did, which is to open the bars when the switch flag

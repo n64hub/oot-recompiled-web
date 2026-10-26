@@ -79,7 +79,7 @@ recomp_camera_smooth  = 0x8F0000B0;
 recomp_wide_frame_scale_q16 = 0x8F0000B4;
 
 /* The transition type the harness warp uses: the game's fade unless the run asked for another
-   with --transition, so the wipe, the circle and the triforce can be reached on demand. */
+   with --transition, so the wipe, the circle and the triangles can be reached on demand. */
 recomp_warp_transition = 0x8F0000B8;
 
 /* Whether the room on screen is drawn as a fixed camera over a background picture, in which case
@@ -172,9 +172,8 @@ recomp_glow_test = 0x8F000138;
 recomp_message_assist = 0x8F00013C;
 recomp_low_health_beep = 0x8F000140;
 
-/* The painted rays through the Temple of Time's side windows (patches/window_rays.c, 2026-10-09):
-   whether the windows' traced shafts stand in for them. */
-recomp_window_rays_hidden = 0x8F000144;
+/* 0x8F000144 was recomp_window_rays_hidden (patches/window_rays.c, 2026-10-09), gone 2026-10-12
+   with the drawn beams always shown. Left unused rather than reused. */
 
 /* Photo mode (patches/photo_mode.c, patches/photo_audio.c, 2026-10-09): whether it holds the game. */
 recomp_photo_mode = 0x8F000148;
@@ -189,3 +188,24 @@ recomp_hud_part = 0x8F00015C;
 recomp_hud_layout = 0x8F000160;
 recomp_hud_place = 0x8F000164;
 recomp_hud_frame_q16 = 0x8F000168;
+
+/* How full the scene is and where the Sun's Song stands, for the log (patches/actor_note.c,
+   2026-10-12). 0x8F00016C and 0x8F000174 held that day's Debugging switches, folded in the same
+   day; left unused. */
+recomp_note_actors = 0x8F000170;
+
+/* The menu holds the game (the menus plan, phase 97): whether a menu is open in the game, for the
+   music's lowered level (patches/menu_music.c, phase 98). 0x8F000174 stays unused (above). */
+recomp_menu_hold = 0x8F000178;
+recomp_menu_music_level = 0x8F00017C;
+
+/* The game's own system sounds for the program's menus (patches/menu_sounds.c, the menus plan,
+   phase 112): the next cue and its volume, or -1. */
+recomp_menu_sound_next = 0x8F000180;
+
+/* Which targeting arrows are hidden (patches/hud_anchoring.c, Hud_DrawAttention; the HUD menu's
+   Targeting rows, 2026-10-13). */
+recomp_hud_targeting = 0x8F000184;
+
+/* 0x8F000188 held the Debugging switches for the arrow and the hookshot (2026-10-21), folded in
+   the same day once the user confirmed them; left unused. */

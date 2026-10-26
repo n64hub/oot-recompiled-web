@@ -67,6 +67,23 @@ namespace oot::input::devices {
     // that binds a button never also navigates.
     uint64_t take_pad_edges(int slot);
 
+    // THE INTERFACE'S VIEW OF A PAD (the menus plan, phase 90). The menus read a pad by the
+    // physical POSITION of its buttons in the standard layout, not through the game's profile,
+    // so a game control rebound never moves the menus' Back: the south button selects, east goes
+    // back, west clears, north restores a default, the shoulders change section, the d-pad and
+    // the left stick move. A raw pad SDL does not map falls back to its profile (A, B, the
+    // directions, L and R). `held` is a bit per interface action in its own order
+    // (ui/input/ui_input_core.h, Action): up, down, left, right, accept, back, clear, default,
+    // section back, section on. Nothing is held while a capture is listening, so the press that
+    // binds a button never also navigates. `kind` is the pad's family by what is printed on it.
+    enum class PadKind { Xbox, DualShock, DualSense, Nintendo, Other };
+    struct UiPad {
+        int instance = -1;      // SDL's instance id, the same for as long as it stays connected
+        PadKind kind = PadKind::Other;
+        uint32_t held = 0;
+    };
+    bool ui_pad(int slot, UiPad& out);
+
     // Device added and removed events from the pump. Anything else is ignored.
     void handle_event(const SDL_Event& event);
 

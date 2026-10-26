@@ -1,8 +1,12 @@
 // This game, described to the runtime.
 //
 // Everything here is measured from our own ROM by tools/rom_identity.cpp, not copied. A wrong
-// rom_hash rejects the user's correct ROM; a wrong internal_name turns "you have the wrong version"
-// into "this is not the right game", which sends them looking in the wrong place.
+// rom_hash rejects the user's correct ROM; a wrong header name hash (game.h) turns "you have the
+// wrong version" into "this is not the right game", which sends them looking in the wrong place.
+//
+// THE GAME'S NAME IS NOT HERE, in any form (the user, 2026-10-13: "I definitely don't want to have
+// any of the copyrighted stuff on the actual produced files that people are downloading"). The
+// header's name is known by its hash, and the runtime's display name says only which release.
 
 #include "game/game.h"
 
@@ -13,7 +17,7 @@ namespace {
     // The runtime's own init writes the television type, the ROM base, the reset type and the
     // memory size ("Initialize variables normally set by IPL3" in librecomp's recomp.cpp) and stops
     // there, with `osCicId` named in a comment and left unset. This game reads it: `osCicId` must
-    // be 6105, this cartridge's CIC, or Zelda's hair is drawn misshapen (z_en_zl2.c, one of the
+    // be 6105, this cartridge's CIC, or one character's hair is drawn misshapen (z_en_zl2.c, one of the
     // game's three anti-piracy checks; the other two, the collapse bars' and the fishing pond's,
     // read through the uncached view and are handled in patches/fixes/anti_piracy_reads.c, whose
     // header tells the whole story). It is an ordinary variable at 0x80000310 (libultra's
@@ -35,7 +39,6 @@ namespace {
     // From tools/rom_identity.cpp, run against the retail NTSC-U 1.0 ROM:
     //
     //     size          33554432 bytes
-    //     internal name "THE LEGEND OF ZELDA"
     //     rom_hash      0x9C427099CC30D135ULL
     //
     // The hash is XXH3_64bits over the whole file, which is what librecomp's check_hash computes,
@@ -46,11 +49,14 @@ namespace {
     const recomp::GameEntry entry = {
         .rom_hash = ROM_HASH,
 
-        // Read from ROM offset 0x20, space padding trimmed. The runtime compares this to tell a
-        // wrong REVISION of this game from a different game entirely.
-        .internal_name = "THE LEGEND OF ZELDA",
+        // Empty. Its one reader in the runtime is recomp::select_rom, which this program does not
+        // call: src/main/rom_source.cpp validates the ROM and tells a wrong REVISION of this game
+        // from a different game by the header name's hash (game.h), never by the name.
+        .internal_name = {},
 
-        .display_name = "The Legend of Zelda: Ocarina of Time",
+        // The runtime refuses an empty one; it names the release, which is all it is used for (a
+        // listing of games and our log).
+        .display_name = "NTSC-U 1.0",
 
         // Version is explicit in the id because everything in this project is specific to NTSC-U
         // 1.0: the addresses, the symbols, the overlay list, the microcode offsets. A second
@@ -58,7 +64,7 @@ namespace {
         .game_id = u8"oot.n64.us.1.0",
         .mod_game_id = "oot",
 
-        // Ocarina of Time saves to SRAM. Majora's Mask uses Flashram, which is why the reference
+        // This game saves to SRAM. Majora's Mask uses Flashram, which is why the reference
         // project's entry says otherwise and why this is not a field to copy.
         .save_type = recomp::SaveType::Sram,
 

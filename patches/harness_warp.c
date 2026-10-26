@@ -17,6 +17,10 @@
 #include "patches.h"
 #include "air_movers.h"
 #include "room_pieces.h"
+#include "actor_heap.h"
+#include "actor_note.h"
+#include "menu_music.h"
+#include "menu_sounds.h"
 #include "misc_funcs.h"
 
 #include "environment.h"
@@ -47,7 +51,7 @@ void Play_Draw(PlayState* this);
 s32 recomp_take_warp(void);
 
 // The transition the warp uses: the game's fade to black unless the run asked for another with
-// --transition, which is how the wipe, the circle and the triforce are reached on demand.
+// --transition, which is how the wipe, the circle and the triangles are reached on demand.
 s32 recomp_warp_transition(void);
 
 // The time of day the debug menu has asked for, as the game's own 16 bit clock, or a negative
@@ -494,7 +498,12 @@ RECOMP_PATCH void Play_Main(GameState* thisx) {
         Object_UpdateEntries(&this->objectCtx);
         Room_ProcessRoomRequest(this, &this->roomCtx);
     }
-    else if (recomp_harness_frozen()) {
+    // @recomp NEVER A SCENE'S FIRST UPDATE (2026-10-21, found in the sweep before 0.6.1). The
+    // harness's own freeze already refuses it (src/main/shots.cpp, on_play_tick: "holding it
+    // crashed the draw"), but a menu or photo mode held whatever frame the game was on: the menu
+    // opened over the console logo held the title scene from its first update, and a door's load
+    // finishing with the menu open did the same. The first update runs; the hold begins after it.
+    else if (recomp_harness_frozen() && (this->state.frames != 0)) {
         if (!sFrozenFramesValid) {
             sFrozenFrames = this->state.frames;
             sFrozenFramesValid = 1;
@@ -522,6 +531,14 @@ RECOMP_PATCH void Play_Main(GameState* thisx) {
         // @recomp The things that moved through the air this update, for the dust they push
         // (patches/air_movers.c).
         AirMovers_Publish(this);
+
+        // @recomp A hookshot in hand whose hook the game had no room to make gets it now
+        // (patches/actor_heap.c, 2026-10-21), before the note reports it.
+        ActorHeap_HookshotGuard(this);
+
+        // @recomp How full the scene is and where the Sun's Song stands, for the log
+        // (patches/actor_note.c, 2026-10-12).
+        ActorNote_Update(this);
     }
 
     // @recomp The rooms' painted elements, each as the Debugging menu's switch for it says
@@ -531,6 +548,13 @@ RECOMP_PATCH void Play_Main(GameState* thisx) {
     // @recomp Photo mode (2026-10-09, patches/photo_mode.c): while it holds the game the frozen
     // frame is drawn from its own camera, which the player moves; otherwise nothing.
     PhotoMode_Update(this);
+
+    // @recomp The music at a fifth of its level while a menu holds the game, eased down and back
+    // (patches/menu_music.c, the menus plan, phase 98). Every frame, held or not.
+    MenuMusic_Update();
+
+    // @recomp The game's own sounds for the program's menus (patches/menu_sounds.c, phase 112).
+    MenuSounds_Update();
 
     Play_Draw(this);
 }

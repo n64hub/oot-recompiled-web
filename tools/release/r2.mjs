@@ -53,8 +53,12 @@ const loadCredentials = () => {
         }
     }
 
-    const hubEnv = join(homedir(), 'Nextcloud', 'development', 'internal', 'releases-hub', '.env.local');
-    if (existsSync(hubEnv)) {
+    // The hub lives under ~/Nextcloud-Personal (the global rules' path); ~/Nextcloud is where it was
+    // before, kept so an older machine still finds it (2026-10-12: 0.5.1 and 0.5.2 failed to stage
+    // here with "No R2 credentials" until the keys were set in the environment by hand).
+    for (const nextcloud of ['Nextcloud-Personal', 'Nextcloud']) {
+        const hubEnv = join(homedir(), nextcloud, 'development', 'internal', 'releases-hub', '.env.local');
+        if (!existsSync(hubEnv)) continue;
         const values = parseEnvFile(readFileSync(hubEnv, 'utf8'));
         if (REQUIRED.every((k) => values[k])) {
             return { source: "the releases hub's .env.local (a fallback, not their home)", values };

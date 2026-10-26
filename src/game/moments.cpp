@@ -9,6 +9,7 @@
 #include "game/moments.h"
 
 #include "game/game_state.h"
+#include "game/warp_places.h"
 #include "main/places.h"
 #include "main/recorder.h"
 #include "ui/ui_settings.h"
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -33,6 +35,10 @@ namespace oot::moments {
         // The request, one at a time. A slot of -1 is no request. The lifetime is in play ticks
         // (the game's own updates, twenty a second), because the patch answers per update.
         std::atomic<int> g_pending_slot{ -1 };
+        // A moment whose picture the recorder could not take at once (another was waiting), asked
+        // for again each frame until this play tick; NO_SLOT when none is owed.
+        std::atomic<int> g_picture_slot{ NO_SLOT };
+        std::atomic<uint32_t> g_picture_until_tick{ 0 };
         std::atomic<uint32_t> g_pending_until_tick{ 0 };
         std::atomic<uint32_t> g_pending_delay{ 0 };
         // The autosave's clock (phase 78): the last capture of any kind, the last manual one, and
@@ -92,13 +98,13 @@ namespace oot::moments {
         std::mutex g_notice_mutex;
         std::string g_notice;
 
-        // The staged resume: the file read and checked, waiting for a safe frame.
-        std::atomic<int> g_load_slot{ -1 };
+        // The staged resume: the file read and checked, waiting for a safe frame. NO_SLOT when none.
+        std::atomic<int> g_load_slot{ NO_SLOT };
         std::atomic<uint32_t> g_load_until_tick{ 0 };
         std::vector<uint32_t> g_staged_save;
         std::vector<uint32_t> g_staged_context;
         Place g_staged_place{};
-        int g_staged_slot = -1;
+        int g_staged_slot = NO_SLOT;
 
         const char* reason_text(int reason) {
             switch (reason) {
@@ -178,9 +184,23 @@ namespace oot::moments {
 
     } // namespace
 
+    namespace {
+        // The names under a moments folder, for slot_file and for the selftest's scratch folder.
+        std::filesystem::path slot_file_in(const std::filesystem::path& root, int slot, const char* extension);
+    }
+
     std::filesystem::path slot_file(int slot, const char* extension) {
+        return slot_file_in(oot::places::moments(), slot, extension);
+    }
+
+    namespace {
+    std::filesystem::path slot_file_in(const std::filesystem::path& root, int slot, const char* extension) {
         // The player's slots are "1" to "8"; the autosaves are "auto" (the newest, and the name
-        // this has always written) then "auto2" to "auto5" going back in time.
+        // this has always written) then "auto2" to "auto5" going back in time; the reserved are
+        // "r1" to "r20" in a folder of their own.
+        if (is_reserved(slot)) {
+            return root / "reserved" / ("r" + std::to_string(slot - RESERVED_FIRST + 1) + extension);
+        }
         std::string stem;
         if (slot > AUTOSAVE_SLOT) {
             stem = std::to_string(slot);
@@ -191,12 +211,17 @@ namespace oot::moments {
         else {
             stem = "auto" + std::to_string(1 - slot);
         }
-        return oot::places::moments() / (stem + extension);
+        return root / (stem + extension);
     }
+    } // namespace
 
     void request_capture(int slot, uint32_t lifetime_ticks, const std::string& name, uint32_t delay_ticks) {
         if (!slot_exists(slot)) {
             std::fprintf(stderr, "MOMENT_REFUSED slot %d does not exist\n", slot);
+            return;
+        }
+        if (is_reserved(slot)) {
+            std::fprintf(stderr, "MOMENT_REFUSED slot %d is reserved: nothing is written over it\n", slot);
             return;
         }
         // The autosave's own request rotates first, so the four before it survive and the oldest
@@ -234,6 +259,202 @@ namespace oot::moments {
         out = g_notice;
         g_notice.clear();
         return true;
+    }
+
+    namespace {
+        bool holds(const std::filesystem::path& root, int slot) {
+            std::error_code ec;
+            return std::filesystem::is_regular_file(slot_file_in(root, slot, ".moment"), ec);
+        }
+
+        // THE MOVE, by rename as the autosave rotation moves its files: the moment first, so the
+        // moment is in one place or the other and never in both or neither, then the thumbnails,
+        // any stale ones at the target cleared first. In `root`, the moments folder or the
+        // selftest's scratch one.
+        Move move_to_first_free(const std::filesystem::path& root, int slot, int first, int last, int& to) {
+            to = NO_SLOT;
+            if (!slot_exists(slot) || !holds(root, slot)) {
+                return Move::NothingThere;
+            }
+            for (int candidate = first; candidate <= last; ++candidate) {
+                if (!holds(root, candidate)) {
+                    to = candidate;
+                    break;
+                }
+            }
+            if (to == NO_SLOT) {
+                return Move::NoRoom;
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(slot_file_in(root, to, ".moment").parent_path(), ec);
+            std::filesystem::rename(slot_file_in(root, slot, ".moment"), slot_file_in(root, to, ".moment"), ec);
+            if (ec) {
+                std::fprintf(stderr, "MOMENT_REFUSED the move from slot %d to %d failed: %s\n", slot, to, ec.message().c_str());
+                to = NO_SLOT;
+                return Move::Failed;
+            }
+            for (const char* extension : { ".rgba", ".png" }) {
+                std::error_code thumb;
+                std::filesystem::remove(slot_file_in(root, to, extension), thumb);
+                if (std::filesystem::is_regular_file(slot_file_in(root, slot, extension), thumb)) {
+                    std::filesystem::rename(slot_file_in(root, slot, extension), slot_file_in(root, to, extension), thumb);
+                }
+            }
+            std::fprintf(stderr, "MOMENT_MOVED %d %d\n", slot, to);
+            return Move::Done;
+        }
+
+        Move reserve_in(const std::filesystem::path& root, int slot, int& to) {
+            if (is_reserved(slot)) {
+                to = slot;
+                return Move::Done;
+            }
+            return move_to_first_free(root, slot, RESERVED_FIRST, RESERVED_LAST, to);
+        }
+
+        Move unreserve_in(const std::filesystem::path& root, int slot, int& to) {
+            if (!is_reserved(slot)) {
+                to = slot;
+                return Move::Done;
+            }
+            return move_to_first_free(root, slot, 1, SLOT_COUNT, to);
+        }
+
+        int reserved_count_in(const std::filesystem::path& root) {
+            int count = 0;
+            for (int slot = RESERVED_FIRST; slot <= RESERVED_LAST; ++slot) {
+                count += holds(root, slot) ? 1 : 0;
+            }
+            return count;
+        }
+
+    } // namespace
+
+    Move reserve(int slot, int& to) {
+        return reserve_in(oot::places::moments(), slot, to);
+    }
+
+    Move unreserve(int slot, int& to) {
+        return unreserve_in(oot::places::moments(), slot, to);
+    }
+
+    int reserved_count() {
+        return reserved_count_in(oot::places::moments());
+    }
+
+    int selftest() {
+        int passed = 0;
+        bool ok = true;
+        const auto check = [&](bool cond, const char* what) {
+            if (cond) {
+                ++passed;
+            }
+            else {
+                std::printf("  moments: %s\n", what);
+                ok = false;
+            }
+        };
+        std::error_code ec;
+        const std::filesystem::path root = std::filesystem::temp_directory_path(ec) / "oot-recompiled-moments-selftest";
+        if (ec) {
+            std::printf("MOMENTS_SELFTEST_FAIL no temporary folder\n");
+            return 1;
+        }
+        std::filesystem::remove_all(root, ec);
+        const auto place = [&](int slot, bool thumb) {
+            std::filesystem::create_directories(slot_file_in(root, slot, ".moment").parent_path(), ec);
+            std::ofstream(slot_file_in(root, slot, ".moment"), std::ios::binary) << "m" << slot;
+            if (thumb) {
+                std::ofstream(slot_file_in(root, slot, ".png"), std::ios::binary) << "p" << slot;
+            }
+        };
+        const auto text_of = [&](int slot, const char* extension) {
+            std::ifstream in(slot_file_in(root, slot, extension), std::ios::binary);
+            std::string s;
+            std::getline(in, s);
+            return s;
+        };
+
+        // The table: one run of indexes, every slot in it once, and nothing outside it.
+        check(slot_index(AUTOSAVE_OLDEST) == 0 && slot_index(RESERVED_LAST) == SLOT_TOTAL - 1, "the index runs 0 to the total");
+        check(slot_index(9) == -1 && slot_index(100) == -1 && slot_index(NO_SLOT) == -1, "a slot that is not one has no index");
+        check(!slot_exists(NO_SLOT) && !is_reserved(SLOT_COUNT) && is_reserved(RESERVED_FIRST), "the reserved are their own");
+        check(slot_file_in(root, RESERVED_FIRST, ".moment").filename() == "r1.moment" &&
+              slot_file_in(root, RESERVED_LAST, ".png").parent_path().filename() == "reserved", "reserved files are r1 to r20 in reserved");
+
+        // Reserving a moment of yours: it moves with its thumbnail, and the slot it left is empty.
+        place(3, true);
+        int to = NO_SLOT;
+        check(reserve_in(root, 3, to) == Move::Done && to == RESERVED_FIRST, "slot 3 reserves into r1");
+        check(!holds(root, 3) && text_of(RESERVED_FIRST, ".moment") == "m3" && text_of(RESERVED_FIRST, ".png") == "p3",
+              "the moment and its thumbnail moved, nothing left behind");
+        // An autosave reserves too, into the next free one.
+        place(-2, false);
+        check(reserve_in(root, -2, to) == Move::Done && to == RESERVED_FIRST + 1 && !holds(root, -2), "an older autosave reserves into r2");
+        // Nothing to move.
+        check(reserve_in(root, 5, to) == Move::NothingThere, "an empty slot has nothing to reserve");
+        // Full: the twenty-first is refused and stays where it is.
+        for (int slot = RESERVED_FIRST + 2; slot <= RESERVED_LAST; ++slot) {
+            place(slot, false);
+        }
+        check(reserved_count_in(root) == RESERVED_COUNT, "twenty reserved");
+        place(4, false);
+        check(reserve_in(root, 4, to) == Move::NoRoom && holds(root, 4), "a twenty-first is refused and kept");
+        // Unreserving goes to the first empty of your eight.
+        place(1, false);
+        place(2, false);
+        check(unreserve_in(root, RESERVED_FIRST, to) == Move::Done && to == 3 && text_of(3, ".moment") == "m3" &&
+              text_of(3, ".png") == "p3" && !holds(root, RESERVED_FIRST), "r1 goes back to the first empty of yours");
+        check(reserve_in(root, 4, to) == Move::Done && to == RESERVED_FIRST, "with one freed, the refused one reserves");
+        for (int slot = 1; slot <= SLOT_COUNT; ++slot) {
+            place(slot, false);
+        }
+        check(unreserve_in(root, RESERVED_LAST, to) == Move::NoRoom && holds(root, RESERVED_LAST), "no room in yours keeps it reserved");
+
+        // The place a moment is named for (warp_places.h): an entrance, a later row of its group, and
+        // an index the catalog has no place for.
+        {
+            const oot::warps::Named temple = oot::warps::place_of(0x053);
+            const oot::warps::Named layer = oot::warps::place_of(0x053 + 2);
+            check(temple.place != nullptr && std::string(temple.place) == "Temple of Time" && temple.region != nullptr &&
+                  layer.place == temple.place, "an entrance and a later row of its group name the same place");
+            check(oot::warps::place_of(-5).place == nullptr && oot::warps::place_of(0x7FFF).place == nullptr,
+                  "an index with no place has no name");
+        }
+
+        // A picture from its PNG (recorder.h, raw_from_png): written as the recorder writes one, read
+        // back pixel for pixel, and a damaged one refused rather than drawn wrong.
+        {
+            constexpr int W = 7;
+            constexpr int H = 5;
+            std::vector<uint8_t> rgb(W * H * 3);
+            for (size_t i = 0; i < rgb.size(); ++i) {
+                rgb[i] = static_cast<uint8_t>((i * 37 + 11) & 0xFF);
+            }
+            size_t length = 0;
+            void* png = tdefl_write_image_to_png_file_in_memory_ex(rgb.data(), W, H, 3, &length, 6, MZ_FALSE);
+            const std::filesystem::path png_path = root / "picture.png";
+            std::filesystem::create_directories(root, ec);
+            std::ofstream(png_path, std::ios::binary).write(static_cast<const char*>(png), static_cast<std::streamsize>(length));
+            check(oot::recorder::raw_from_png(png_path), "a PNG as the recorder writes it is read");
+            std::ifstream raw(root / "picture.rgba", std::ios::binary);
+            std::vector<char> bytes((std::istreambuf_iterator<char>(raw)), std::istreambuf_iterator<char>());
+            bool same = bytes.size() == 12 + W * H * 4 && std::memcmp(bytes.data(), "RGBA", 4) == 0;
+            for (int i = 0; same && i < W * H; ++i) {
+                same = static_cast<uint8_t>(bytes[12 + i * 4 + 0]) == rgb[i * 3 + 0] &&
+                       static_cast<uint8_t>(bytes[12 + i * 4 + 1]) == rgb[i * 3 + 1] &&
+                       static_cast<uint8_t>(bytes[12 + i * 4 + 2]) == rgb[i * 3 + 2] &&
+                       static_cast<uint8_t>(bytes[12 + i * 4 + 3]) == 0xFF;
+            }
+            check(same, "the raw picture holds the PNG's pixels, opaque");
+            std::ofstream(root / "broken.png", std::ios::binary).write(static_cast<const char*>(png), static_cast<std::streamsize>(length / 2));
+            mz_free(png);
+            check(!oot::recorder::raw_from_png(root / "broken.png"), "half a PNG is refused");
+        }
+
+        std::filesystem::remove_all(root, ec);
+        std::printf(ok ? "MOMENTS_SELFTEST_OK %d checks\n" : "MOMENTS_SELFTEST_FAIL after %d checks\n", passed);
+        return ok ? 0 : 1;
     }
 
     void quick_save() {
@@ -290,11 +511,13 @@ namespace oot::moments {
         request_capture(oldest, 60, "");
     }
 
-    // The slot holding the newest readable moment, or -1.
+    // The slot holding the newest readable moment, reserved ones included, or NO_SLOT.
     int newest_slot() {
-        int newest = -1;
+        int newest = NO_SLOT;
         uint64_t when = 0;
-        for (int slot = AUTOSAVE_OLDEST; slot <= SLOT_COUNT; ++slot) {
+        for (int index = 0; index < SLOT_TOTAL; ++index) {
+            const int slot = (index < SLOT_COUNT - AUTOSAVE_OLDEST + 1) ? (AUTOSAVE_OLDEST + index)
+                                                                        : (RESERVED_FIRST + index - (SLOT_COUNT - AUTOSAVE_OLDEST + 1));
             Header header{};
             std::vector<uint32_t> save_words;
             std::vector<uint32_t> context_words;
@@ -315,7 +538,7 @@ namespace oot::moments {
     void quick_load() {
         // The same bounce, and worse here: a second resume mid transition is the kind of thing
         // that leaves the game somewhere nobody asked to be.
-        if (g_load_slot.load(std::memory_order_acquire) >= 0) {
+        if (g_load_slot.load(std::memory_order_acquire) != NO_SLOT) {
             std::fprintf(stderr, "[moments] quick resume ignored: one is already staged\n");
             return;
         }
@@ -324,7 +547,7 @@ namespace oot::moments {
             return;
         }
         const int newest = newest_slot();
-        if (newest < 0) {
+        if (newest == NO_SLOT) {
             std::fprintf(stderr, "MOMENT_REFUSED there is no moment to resume\n");
             return;
         }
@@ -340,7 +563,7 @@ namespace oot::moments {
             return -1;
         }
         const int newest = newest_slot();
-        if (newest < 0) {
+        if (newest == NO_SLOT) {
             std::fprintf(stderr, "[moments] resume on start: no moment to resume, the title runs\n");
             return -1;
         }
@@ -360,7 +583,8 @@ namespace oot::moments {
             return -1;
         }
         std::fprintf(stderr, "[moments] resume on start from the console logo: slot %d, file %u\n", newest, file_plus_one - 1);
-        return newest;
+        // The patch's ticket, never negative (take_pending_load says why).
+        return slot_index(newest);
     }
 
     void set_autosave_override(uint32_t ticks) {
@@ -395,7 +619,11 @@ namespace oot::moments {
         if (!g_quit_waiting.load(std::memory_order_acquire)) {
             return true;
         }
-        const bool pending = g_pending_slot.load(std::memory_order_acquire) >= 0;
+        // The moment AND its picture: the picture is taken from the next frame drawn, which a quit
+        // straight after the capture never drew, so a moment kept on quit had none.
+        const bool pending = g_pending_slot.load(std::memory_order_acquire) >= 0 ||
+                             g_picture_slot.load(std::memory_order_acquire) != NO_SLOT ||
+                             oot::recorder::snapshot_pending();
         if (!pending || now_ms() > g_quit_deadline_ms.load(std::memory_order_relaxed)) {
             if (pending) {
                 std::fprintf(stderr, "[moments] no safe frame came; quitting without a moment\n");
@@ -418,7 +646,30 @@ namespace oot::moments {
         return (row > 0 && row < 4) ? minutes[row] * TICKS_PER_MINUTE : 0u;
     }
 
+    // A PICTURE OWED IS ASKED FOR AGAIN (2026-10-13, the user: "sometimes there isnt screenshots
+    // associated with the moment ... there would be no way to know what that save is"). The
+    // recorder takes one picture at a time and refuses a second while one waits (a screenshot, the
+    // moment before), and the moment was then kept with no picture at all. Each frame for five
+    // seconds of play it is asked again; past that the moment keeps its place name alone.
+    namespace {
+    void retry_picture() {
+        const int slot = g_picture_slot.load(std::memory_order_acquire);
+        if (slot == NO_SLOT) {
+            return;
+        }
+        if (oot::game_state::play_ticks() > g_picture_until_tick.load(std::memory_order_relaxed)) {
+            g_picture_slot.store(NO_SLOT, std::memory_order_release);
+            std::fprintf(stderr, "[moments] no picture could be taken for slot %d\n", slot);
+            return;
+        }
+        if (oot::recorder::snapshot(slot_file(slot, ".png"), THUMBNAIL_WIDTH)) {
+            g_picture_slot.store(NO_SLOT, std::memory_order_release);
+        }
+    }
+    } // namespace
+
     int take_pending_capture() {
+        retry_picture();
         int slot = g_pending_slot.load(std::memory_order_acquire);
         if (slot < 0) {
             // NOTHING ASKED FOR: is the autosave due? On the interval since the last capture of
@@ -483,12 +734,12 @@ namespace oot::moments {
             g_pending_slot.store(-1, std::memory_order_release);
             std::fprintf(stderr, "MOMENT_REFUSED %s\n", reason_text(reason));
         }
-        if (g_load_slot.load(std::memory_order_acquire) >= 0 &&
+        if (g_load_slot.load(std::memory_order_acquire) != NO_SLOT &&
             ticks > g_load_until_tick.load(std::memory_order_relaxed)) {
-            g_load_slot.store(-1, std::memory_order_release);
+            g_load_slot.store(NO_SLOT, std::memory_order_release);
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
-                g_staged_slot = -1;
+                g_staged_slot = NO_SLOT;
             }
             std::fprintf(stderr, "MOMENT_REFUSED %s\n", reason_text(reason));
         }
@@ -524,9 +775,12 @@ namespace oot::moments {
         header.flags = is_autosave(slot) ? FLAG_AUTOSAVE : 0u;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
-            const std::string name = g_pending_name.empty()
-                ? ("Scene " + std::to_string(place.scene) + " at " + clock_text(place.day_time))
-                : g_pending_name;
+            // Named for the place it was taken (the warp catalog's name for the entrance), and the
+            // scene's number only where the catalog has no place for it.
+            const oot::warps::Named where = oot::warps::place_of(place.entrance);
+            const std::string name = !g_pending_name.empty() ? g_pending_name
+                : (where.place != nullptr ? std::string(where.place) : ("Scene " + std::to_string(place.scene))) +
+                      " at " + clock_text(place.day_time);
             copy_text(header.name, sizeof(header.name), name);
         }
         header.save_size = SAVE_SIZE;
@@ -537,6 +791,10 @@ namespace oot::moments {
         const std::filesystem::path png = slot_file(slot, ".png");
         if (oot::recorder::snapshot(png, THUMBNAIL_WIDTH)) {
             header.flags |= FLAG_THUMBNAIL;
+        }
+        else {
+            g_picture_until_tick.store(oot::game_state::play_ticks() + 5 * 20, std::memory_order_relaxed);
+            g_picture_slot.store(slot, std::memory_order_release);
         }
 
         std::vector<uint8_t> bytes;
@@ -613,7 +871,7 @@ namespace oot::moments {
 
     int take_pending_load() {
         int slot = g_load_slot.load(std::memory_order_acquire);
-        if (slot < 0) {
+        if (slot == NO_SLOT) {
             // RESUME ON START (phase 78b): once, the first time play is seen with the row on and
             // nothing else asked for, the newest moment is staged, exactly as quick load stages it.
             // "Once a file is loaded" is the honest shape: the game's title and file select are
@@ -627,24 +885,27 @@ namespace oot::moments {
                     slot = g_load_slot.load(std::memory_order_acquire);
                 }
             }
-            if (slot < 0) {
+            if (slot == NO_SLOT) {
                 return -1;
             }
         }
         const oot::game_state::Snapshot now = oot::game_state::read();
         if (!now.valid || now.game_mode != 0) {
             if (oot::game_state::play_ticks() > g_load_until_tick.load(std::memory_order_relaxed)) {
-                g_load_slot.store(-1, std::memory_order_release);
+                g_load_slot.store(NO_SLOT, std::memory_order_release);
                 std::fprintf(stderr, "MOMENT_REFUSED %s\n", reason_text(6));
             }
             return -1;
         }
-        return slot;
+        // A TICKET, NOT THE SLOT: the patch takes "0 or more" as "a resume is staged", and the four
+        // older autosaves are slots -1 to -4, so handing it the slot itself meant those never loaded.
+        // The patch uses the number for nothing but the refusal it hands back to note_refused.
+        return slot_index(slot);
     }
 
     bool take_staged(std::vector<uint32_t>& save_words, std::vector<uint32_t>& context_words, Place& place) {
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_staged_slot < 0) {
+        if (g_staged_slot == NO_SLOT) {
             return false;
         }
         save_words = g_staged_save;
@@ -654,15 +915,15 @@ namespace oot::moments {
     }
 
     void note_resumed() {
-        int slot = -1;
+        int slot = NO_SLOT;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             slot = g_staged_slot;
-            g_staged_slot = -1;
+            g_staged_slot = NO_SLOT;
             g_staged_save.clear();
             g_staged_context.clear();
         }
-        g_load_slot.store(-1, std::memory_order_release);
+        g_load_slot.store(NO_SLOT, std::memory_order_release);
         std::fprintf(stderr, "MOMENT_RESUMED %d\n", slot);
         // The game has taken the state by the time this runs, so the line is true when it shows.
         notice("State restored");

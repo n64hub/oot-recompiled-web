@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 // The frame recorder: every presented frame written as its own PNG, for as long as was asked for.
@@ -104,21 +105,46 @@ namespace oot::recorder {
     // the cadence the encoders happened to write at.
     void submit(const uint8_t* bgra, int width, int height, std::size_t pitch, uint64_t presented_us);
 
-    // ONE FRAME, ON ITS OWN, as a PNG scaled to `width` pixels across: the thumbnail beside a
-    // saved moment (phase 75). The next presented frame is taken whether or not a recording is
-    // running, encoded on the render thread (a 320 pixel picture costs nothing worth a queue) and
-    // written to `png`. Returns false if a snapshot is already waiting.
+    // WHAT A SNAPSHOT IS OF.
+    //   Window        the swap chain as presented, at the window's size: the thumbnail beside a
+    //                 saved moment (phase 75).
+    //   Game          the game's picture alone, without this program's interface, drawn again at
+    //                 Screenshot size through the renderer's picture hook (ui_render.cpp), so a shot
+    //                 taken with the settings open is the scene alone (2026-10-09).
+    //   WindowAtSize  the whole window drawn again at Screenshot size, the game at that size and
+    //                 this program's interface over it at that size too, never the window stretched
+    //                 (2026-10-14, the user: "it even got captures the UI of like the launcher and the
+    //                 menu and all of that stuff in the same resolution").
+    enum class Shot { Window, Game, WindowAtSize };
+
+    // ONE FRAME, ON ITS OWN, as a PNG scaled down to at most `width` pixels across. The next
+    // presented frame is taken whether or not a recording is running and written to `png`, with the
+    // raw ".rgba" beside it when `raw` (the interface's thumbnails read that; a screenshot does not
+    // want it). Returns false while another snapshot is waiting or still being written.
     //
-    // THE GAME ALONE (2026-10-09, the Screenshots show row): with `game_alone`, the frame is the
-    // game's picture without this program's interface, drawn again at the window's size through
-    // the renderer's picture hook (ui_render.cpp) rather than read from the swap chain, so a shot
-    // taken with the settings open is the scene alone.
-    bool snapshot(const std::filesystem::path& png, int width, bool game_alone = false);
-    // Whether the snapshot waiting wants the game alone (ui_render.cpp takes it, then hands it
-    // to submit_snapshot, which writes it and clears the request).
-    bool snapshot_wants_game_alone();
-    void submit_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch);
-    // Whether the snapshot asked for has not been taken yet (the sweep waits on it).
+    // NOTHING HERE STALLS THE PICTURE (the user, 2026-10-14: "it never freezes the UI"). The PNG is
+    // made and written on a thread of its own: a 4K one is most of a second of work. A frame from
+    // the picture hook is read there too, straight out of its readback buffer, which the hook gets
+    // back through `done`; one from the swap chain, whose buffer is reused next frame, is scaled and
+    // converted first, which for a thumbnail is nothing.
+    bool snapshot(const std::filesystem::path& png, int width, Shot what = Shot::Window, bool raw = true);
+
+    // THE RAW PICTURE FROM THE PNG (2026-10-13, the user: "sometimes there isnt screenshots
+    // associated with the moment"). A moment from before the raw ".rgba" was written beside its
+    // PNG has only the PNG, which the interface cannot draw, so its row showed no picture. This
+    // reads OUR OWN PNG back (8 bit RGB or RGBA, not interlaced: what miniz writes here), inflating
+    // it with the miniz already linked for writing it, and writes the ".rgba" beside it. Anything
+    // else, or a file that does not hold together, is refused and false. Never a general decoder.
+    bool raw_from_png(const std::filesystem::path& png);
+    // Whether the snapshot waiting, not yet taken, is of this kind (ui_render.cpp takes a Game or a
+    // WindowAtSize one, then hands it to submit_snapshot).
+    bool snapshot_wants(Shot what);
+    // The taken frame, read on the writing thread; `done` is called once its pixels are no longer
+    // needed, from that thread, so the caller can give its buffer back. Called at once when no
+    // snapshot is waiting.
+    void submit_snapshot(const uint8_t* bgra, int width, int height, std::size_t pitch, std::function<void()> done);
+    // Whether the snapshot asked for has not been taken and written yet (the sweep, the screenshots
+    // and the moments wait on it, so a file is there when this turns false).
     bool snapshot_pending();
 
     // Stop, finish writing whatever is queued, and let the threads go. Called at shutdown; safe

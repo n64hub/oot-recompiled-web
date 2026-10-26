@@ -60,6 +60,14 @@ foreach ($name in $EXCLUDE) {
         Write-Output "  left out: $name"
     }
 }
+# AND PROVED GONE (the user, 2026-10-13: the planning, the worklog and the task list must never be
+# synced to the public repository): a copy that still holds any of them is never pushed.
+foreach ($name in $EXCLUDE) {
+    if (Test-Path (Join-Path $out $name)) {
+        Write-Output "PUBLISH_FAIL $name is still in the public copy"
+        exit 1
+    }
+}
 
 # A last look for anything derived from the ROM, by extension and by directory name. The gitignore
 # and the hook already prevent these; this is the check that runs every time rather than once.
@@ -140,7 +148,7 @@ Write-Output "  account: $who"
 Push-Location $out
 $exists = (& gh repo view $Repo --json name 2>$null)
 if (-not $exists) {
-    & gh repo create $Repo --public --source=. --remote=origin --description "A static recompilation of Ocarina of Time into a native Windows executable, with ray traced lighting." 2>&1 | Out-Null
+    & gh repo create $Repo --public --source=. --remote=origin --description "A static recompilation of an N64 game into a native Windows executable, with ray traced lighting." 2>&1 | Out-Null
     Write-Output "  created $Repo"
 } else {
     & git remote remove origin 2>$null

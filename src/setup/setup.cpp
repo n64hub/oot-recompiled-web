@@ -11,15 +11,17 @@
 // game binary with no SDL2.dll beside it fails at load time and never reaches the code that would
 // have written one. Delay loading the imports gets past that and then dies anyway, because a
 // static initializer reaches SDL before the first line of main: the process ends with
-// ERROR_MOD_NOT_FOUND (0xC06D007E) having printed nothing at all, which is a genuinely horrible
-// thing to debug. This stub imports nothing but the operating system, so none of that can happen.
+// ERROR_MOD_NOT_FOUND, the delay load's module failure, having printed nothing at all, which is a
+// genuinely horrible thing to debug. This stub imports nothing but the operating system, so none of that can happen.
 //
-// THE WINDOW IS DRAWN BY HAND, in the tokens of assets/ui/tokens.rcss (the "Instrument Case"
-// decision: the walnut case lit from the top left, brass for the one thing to do, hardware doing
-// the dividing), because this program has no RmlUi and must not: the interface library lives in
-// the payload it is about to unpack. The colors and the metrics below are that file's, copied
-// once and named the same, so a change there is a change here. It used to install in silence and
-// start the game, and "it doesn't even feel like it installed" (the user, 2026-09-24).
+// THE WINDOW IS DRAWN BY HAND, in the site's branding as the menus wear it (the menus plan, phase
+// 115): the cold slate ground, lime for what you can act on, gold for light, square corners, and
+// the site's three faces. This program has no RmlUi and must not (the interface library lives in
+// the payload it is about to unpack), so it reads the same tokens through the header the build
+// generates from assets/ui/tokens.rcss (ui_tokens.h): no color or size below is typed by hand,
+// and a change there is a change here. The faces are loaded privately from its own payload, with
+// Segoe UI and Consolas when one cannot be read. It used to install in silence and start the game,
+// and "it doesn't even feel like it installed" (the user, 2026-09-24).
 //
 // It requires no administrator rights and writes nothing outside the folder the person chose,
 // which defaults to their own application data.
@@ -28,6 +30,7 @@
 #include "main/install.h"
 
 #include "build_info.h"
+#include "ui_tokens.h"
 
 #include <miniz.h>
 
@@ -36,7 +39,10 @@
 #include <windowsx.h>
 #include <shobjidl.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <vector>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -52,35 +58,58 @@ namespace {
     constexpr const wchar_t* GAME_EXE = L"OoTRecompiled.exe";
     constexpr const wchar_t* WINDOW_CLASS = L"OoTRecompiledSetup";
 
-    // The tokens (assets/ui/tokens.rcss), as COLORREF.
-    constexpr COLORREF CASE_TOP = RGB(58, 44, 32);
-    constexpr COLORREF CASE_BOTTOM = RGB(36, 26, 19);
-    constexpr COLORREF TRACK = RGB(0x1c, 0x15, 0x0f);
-    constexpr COLORREF TEXT = RGB(0xf2, 0xe7, 0xd5);
-    constexpr COLORREF TEXT_DIM = RGB(0xb3, 0x9a, 0x78);
-    constexpr COLORREF ON_ACCENT = RGB(0x24, 0x1a, 0x13);
-    constexpr COLORREF ACCENT = RGB(0xcf, 0xa3, 0x3c);
-    constexpr COLORREF BRASS_LIGHT = RGB(0xe8, 0xcd, 0x7e);
-    constexpr COLORREF LINE = RGB(0x5d, 0x47, 0x2f);
-    constexpr COLORREF LINE_BRIGHT = RGB(0x8a, 0x6a, 0x36);
-    constexpr COLORREF ROW_ON = RGB(70, 54, 34);
-    constexpr COLORREF OK_COLOR = RGB(0x9f, 0xb4, 0x6a);
-    constexpr COLORREF BAD = RGB(0xcd, 0x7a, 0x5a);
+    namespace tk = oot::ui::tokens;
+
+    // A token's RGBA as GDI's COLORREF (its red in the low byte), alpha dropped: GDI draws opaque.
+    constexpr COLORREF color_of(uint32_t rgba) {
+        return static_cast<COLORREF>(((rgba >> 24) & 0xFFu) | (((rgba >> 16) & 0xFFu) << 8) | (((rgba >> 8) & 0xFFu) << 16));
+    }
+
+    // The tokens, by what they do here.
+    constexpr COLORREF GROUND = color_of(tk::color_slate);
+    constexpr COLORREF LID = color_of(tk::color_slate_deep);
+    constexpr COLORREF TRACK = color_of(tk::color_slate_deep);
+    constexpr COLORREF RAISED = color_of(tk::color_slate_raised);
+    constexpr COLORREF ROW_ON = color_of(tk::color_plate_on);
+    constexpr COLORREF TEXT = color_of(tk::color_ink);
+    constexpr COLORREF TEXT_DIM = color_of(tk::color_dim);
+    constexpr COLORREF ACCENT = color_of(tk::color_lime);
+    constexpr COLORREF ACCENT_BRIGHT = color_of(tk::color_lime_bright);
+    constexpr COLORREF ON_ACCENT = color_of(tk::color_on_lime);
+    constexpr COLORREF LIGHT = color_of(tk::color_gold);
+    constexpr COLORREF LINE = color_of(tk::color_line);
+    constexpr COLORREF LINE_BRIGHT = color_of(tk::color_faint);
+    constexpr COLORREF OK_COLOR = color_of(tk::color_success);
+    constexpr COLORREF BAD = color_of(tk::color_error);
 
     // The metrics, in device independent pixels (dp), scaled by the window's DPI when drawn.
-    constexpr int WINDOW_W = 560;
-    constexpr int WINDOW_H = 400;
-    constexpr int PAD = 17;
-    constexpr int PAD_ROW = 8;
-    constexpr int ACT_HEIGHT = 40;
-    constexpr int RADIUS = 4;
-    constexpr int RULE = 1;
-    constexpr int FIELD_HEIGHT = 32;
-    constexpr int CHECK = 14;
-    constexpr int SIZE_TITLE = 21;
-    constexpr int SIZE_ROW = 15;
-    constexpr int SIZE_NOTE = 13;
-    constexpr int SIZE_CAPTION = 12;
+    constexpr int whole(float dp_value) {
+        return static_cast<int>(dp_value + 0.5f);
+    }
+    constexpr int WINDOW_W = whole(tk::setup_width);
+    constexpr int WINDOW_H = whole(tk::setup_height);
+    constexpr int HEAD_H = whole(tk::setup_head_height);
+    constexpr int BROWSE_W = whole(tk::setup_browse_width);
+    constexpr int PAD = whole(tk::space_4);
+    constexpr int PAD_ROW = whole(tk::space_2);
+    constexpr int ACT_HEIGHT = whole(tk::act_height);
+    constexpr int RADIUS = whole(tk::radius);
+    constexpr int RULE = whole(tk::rule);
+    constexpr int EDGE_LIT = whole(tk::edge_lit);
+    constexpr int FIELD_HEIGHT = whole(tk::field_height);
+    constexpr int CHECK = whole(tk::check);
+    constexpr int MARK_W = whole(tk::mark_w);
+    constexpr int MARK_H = whole(tk::mark_h);
+    constexpr int SPACE_1 = whole(tk::space_1);
+    constexpr int SPACE_2 = whole(tk::space_2);
+    constexpr int SPACE_3 = whole(tk::space_3);
+    constexpr int SPACE_5 = whole(tk::space_5);
+    constexpr int SPACE_6 = whole(tk::space_6);
+    constexpr int SPACE_16 = whole(tk::space_16);
+    constexpr float SIZE_TITLE = tk::size_display;
+    constexpr float SIZE_ROW = tk::size_row;
+    constexpr float SIZE_NOTE = tk::size_note;
+    constexpr float SIZE_CAPTION = tk::size_label;
 
     // The window's states.
     enum class Stage { Choose, Installing, Done, Failed };
@@ -367,21 +396,19 @@ namespace {
     Layout layout() {
         Layout l{};
         const int w = WINDOW_W;
-        const int head_h = 56;
-        l.head = { 0, 0, w, head_h };
-        int y = head_h + PAD;
-        l.where_label = { PAD, y, w - PAD, y + 20 };
-        y += 24;
-        const int browse_w = 92;
-        l.field = { PAD, y, w - PAD - browse_w - PAD_ROW, y + FIELD_HEIGHT };
-        l.browse = { w - PAD - browse_w, y, w - PAD, y + FIELD_HEIGHT };
+        l.head = { 0, 0, w, HEAD_H };
+        int y = HEAD_H + PAD;
+        l.where_label = { PAD, y, w - PAD, y + SPACE_5 };
+        y += SPACE_6;
+        l.field = { PAD, y, w - PAD - BROWSE_W - PAD_ROW, y + FIELD_HEIGHT };
+        l.browse = { w - PAD - BROWSE_W, y, w - PAD, y + FIELD_HEIGHT };
         y += FIELD_HEIGHT + PAD;
-        l.start_menu = { PAD, y, w - PAD, y + 24 };
-        y += 28;
-        l.desktop = { PAD, y, w - PAD, y + 24 };
-        y += 24 + PAD;
-        l.progress = { PAD, y, w - PAD, y + 10 };
-        l.report = { PAD, y, w - PAD, y + 64 };
+        l.start_menu = { PAD, y, w - PAD, y + SPACE_6 };
+        y += SPACE_6 + SPACE_1;
+        l.desktop = { PAD, y, w - PAD, y + SPACE_6 };
+        y += SPACE_6 + PAD;
+        l.progress = { PAD, y, w - PAD, y + SPACE_2 };
+        l.report = { PAD, y, w - PAD, y + SPACE_16 };
         const int bar_y = WINDOW_H - PAD - ACT_HEIGHT;
         const int half = (w - 2 * PAD - PAD_ROW) / 2;
         l.secondary = { PAD, bar_y, PAD + half, bar_y + ACT_HEIGHT };
@@ -413,10 +440,149 @@ namespace {
 
     // ---- drawing ------------------------------------------------------------------------------
 
-    HFONT make_font(const wchar_t* family, int size_dp, int weight) {
-        return CreateFontW(-dp(size_dp), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    HFONT make_font(const std::wstring& family, float size_dp, int weight) {
+        const int height = MulDiv(static_cast<int>(size_dp * 100.0f + 0.5f), static_cast<int>(g_state.dpi), 9600);
+        return CreateFontW(-height, 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE, family);
+                           DEFAULT_PITCH | FF_DONTCARE, family.c_str());
+    }
+
+    // THE SITE'S FACES, from this file's own payload (assets/fonts/), loaded PRIVATELY with
+    // AddFontMemResourceEx: they exist for this process only, are never installed on the machine,
+    // and go when it exits. A face that cannot be read leaves the system's in its place.
+    struct Faces {
+        std::wstring display = L"Segoe UI";
+        std::wstring body = L"Segoe UI";
+        std::wstring mono = L"Consolas";
+        std::vector<std::vector<unsigned char>> bytes;   // kept for the process's life
+    };
+    Faces g_faces;
+
+    // The family names a font offers in its name table (Windows, English) that begin with the
+    // family it belongs to, each with any weight word at its end taken off, the family first and
+    // then the shortest. Read as hostile input: every offset is checked against the data.
+    std::vector<std::wstring> face_candidates(const std::vector<unsigned char>& font, const std::wstring& family) {
+        std::vector<std::wstring> out{ family };
+        const auto u16 = [&](size_t at) -> uint32_t {
+            return at + 2 <= font.size() ? (static_cast<uint32_t>(font[at]) << 8) | font[at + 1] : 0u;
+        };
+        const auto u32 = [&](size_t at) -> uint32_t { return (u16(at) << 16) | u16(at + 2); };
+        const uint32_t tables = u16(4);
+        size_t name_at = 0;
+        for (uint32_t i = 0; i < tables; ++i) {
+            const size_t record = 12 + 16 * static_cast<size_t>(i);
+            if (record + 16 <= font.size() && font[record] == 'n' && font[record + 1] == 'a' &&
+                font[record + 2] == 'm' && font[record + 3] == 'e') {
+                name_at = u32(record + 8);
+            }
+        }
+        if (name_at == 0 || name_at + 6 > font.size()) {
+            return out;
+        }
+        const uint32_t count = u16(name_at + 2);
+        const size_t strings = name_at + u16(name_at + 4);
+        static const wchar_t* const WEIGHTS[] = { L" Thin", L" ExtraLight", L" Light", L" Regular", L" Medium",
+                                                  L" SemiBold", L" ExtraBold", L" Bold", L" Black" };
+        for (uint32_t i = 0; i < count; ++i) {
+            const size_t record = name_at + 6 + 12 * static_cast<size_t>(i);
+            if (u16(record) != 3 || u16(record + 4) != 0x409) {
+                continue;
+            }
+            const size_t length = u16(record + 8);
+            const size_t start = strings + u16(record + 10);
+            if (start + length > font.size()) {
+                continue;
+            }
+            std::wstring text;
+            for (size_t k = 0; k + 1 < length; k += 2) {
+                text.push_back(static_cast<wchar_t>(u16(start + k)));
+            }
+            if (text.size() <= family.size() || text.compare(0, family.size(), family) != 0 || text[family.size()] != L' ') {
+                continue;
+            }
+            for (const wchar_t* weight : WEIGHTS) {
+                const size_t n = wcslen(weight);
+                if (text.size() > n && text.compare(text.size() - n, n, weight) == 0) {
+                    text.resize(text.size() - n);
+                    break;
+                }
+            }
+            if (std::find(out.begin(), out.end(), text) == out.end()) {
+                out.push_back(text);
+            }
+        }
+        std::stable_sort(out.begin() + 1, out.end(), [](const std::wstring& a, const std::wstring& b) { return a.size() < b.size(); });
+        return out;
+    }
+
+    // Whether GDI, asked for this family, gives back this family rather than a substitute.
+    bool selects(const std::wstring& family) {
+        const HDC dc = GetDC(nullptr);
+        const HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, family.c_str());
+        const HGDIOBJ old = SelectObject(dc, font);
+        wchar_t face[LF_FACESIZE] = {};
+        GetTextFaceW(dc, LF_FACESIZE, face);
+        SelectObject(dc, old);
+        DeleteObject(font);
+        ReleaseDC(nullptr, dc);
+        return _wcsicmp(face, family.c_str()) == 0;
+    }
+
+    bool load_face(mz_zip_archive& zip, const char* file, std::wstring& family, const char* name) {
+        int found = -1;
+        const mz_uint count = mz_zip_reader_get_num_files(&zip);
+        const std::string wanted = std::string("fonts/") + file;
+        for (mz_uint i = 0; i < count; ++i) {
+            char entry[512] = {};
+            mz_zip_reader_get_filename(&zip, i, entry, sizeof(entry));
+            const std::string named(entry);
+            if (named.size() >= wanted.size() && named.compare(named.size() - wanted.size(), wanted.size(), wanted) == 0) {
+                found = static_cast<int>(i);
+                break;
+            }
+        }
+        if (found < 0) {
+            return false;
+        }
+        size_t length = 0;
+        void* data = mz_zip_reader_extract_to_heap(&zip, static_cast<mz_uint>(found), &length, 0);
+        if (data == nullptr) {
+            return false;
+        }
+        std::vector<unsigned char> copy(static_cast<unsigned char*>(data), static_cast<unsigned char*>(data) + length);
+        mz_free(data);
+        DWORD faces = 0;
+        if (AddFontMemResourceEx(copy.data(), static_cast<DWORD>(copy.size()), nullptr, &faces) == nullptr || faces == 0) {
+            return false;
+        }
+        // The face GDI will actually select: the family by the tokens' name first, then the names
+        // the font gives itself. GDI lists a variable font's instances under longer names than the
+        // family (the body face's is "Bricolage Grotesque" plus its optical size), so the first
+        // name that GDI hands back when asked for it is the one to use.
+        for (const std::wstring& candidate : face_candidates(copy, widen(name))) {
+            if (selects(candidate)) {
+                family = candidate;
+                break;
+            }
+        }
+        g_faces.bytes.push_back(std::move(copy));
+        return true;
+    }
+
+    void load_faces() {
+        const HRSRC found = FindResourceW(nullptr, MAKEINTRESOURCEW(PAYLOAD_RESOURCE), MAKEINTRESOURCEW(10));
+        const HGLOBAL loaded = found != nullptr ? LoadResource(nullptr, found) : nullptr;
+        const void* bytes = loaded != nullptr ? LockResource(loaded) : nullptr;
+        const DWORD size = found != nullptr ? SizeofResource(nullptr, found) : 0;
+        mz_zip_archive zip{};
+        if (bytes == nullptr || size <= 64 || !mz_zip_reader_init_mem(&zip, bytes, size, 0)) {
+            return;
+        }
+        load_face(zip, "display.ttf", g_faces.display, tk::font_display);
+        load_face(zip, "body.ttf", g_faces.body, tk::font_body);
+        load_face(zip, "mono.ttf", g_faces.mono, tk::font_mono);
+        mz_zip_reader_end(&zip);
     }
 
     void make_fonts() {
@@ -426,23 +592,14 @@ namespace {
                 *f = nullptr;
             }
         }
-        g_state.title_font = make_font(L"Georgia", SIZE_TITLE, FW_SEMIBOLD);
-        g_state.body_font = make_font(L"Segoe UI", SIZE_ROW, FW_NORMAL);
-        g_state.note_font = make_font(L"Segoe UI", SIZE_NOTE, FW_NORMAL);
-        g_state.caption_font = make_font(L"Segoe UI", SIZE_CAPTION, FW_NORMAL);
-        g_state.field_font = make_font(L"Consolas", SIZE_NOTE, FW_NORMAL);
+        g_state.title_font = make_font(g_faces.display, SIZE_TITLE, FW_BOLD);
+        g_state.body_font = make_font(g_faces.body, SIZE_ROW, FW_NORMAL);
+        g_state.note_font = make_font(g_faces.body, SIZE_NOTE, FW_NORMAL);
+        g_state.caption_font = make_font(g_faces.body, SIZE_CAPTION, FW_NORMAL);
+        g_state.field_font = make_font(g_faces.mono, SIZE_NOTE, FW_NORMAL);
         if (g_state.field != nullptr) {
             SendMessageW(g_state.field, WM_SETFONT, reinterpret_cast<WPARAM>(g_state.field_font), TRUE);
         }
-    }
-
-    void fill_gradient(HDC dc, const RECT& r, COLORREF top, COLORREF bottom) {
-        TRIVERTEX vertices[2] = {
-            { r.left, r.top, static_cast<COLOR16>(GetRValue(top) << 8), static_cast<COLOR16>(GetGValue(top) << 8), static_cast<COLOR16>(GetBValue(top) << 8), 0 },
-            { r.right, r.bottom, static_cast<COLOR16>(GetRValue(bottom) << 8), static_cast<COLOR16>(GetGValue(bottom) << 8), static_cast<COLOR16>(GetBValue(bottom) << 8), 0 }
-        };
-        GRADIENT_RECT rect{ 0, 1 };
-        GradientFill(dc, vertices, 2, &rect, 1, GRADIENT_FILL_RECT_V);
     }
 
     void fill_rect(HDC dc, const RECT& r, COLORREF color) {
@@ -472,15 +629,15 @@ namespace {
         SelectObject(dc, old);
     }
 
-    // The mark: our three stacked triangles in brass (assets/ui/mark.rcss draws the same shape
-    // with a shader), 24 by 20 dp. A shape, not a name.
+    // The mark: our three stacked triangles in the gold of light (assets/ui/mark.rcss draws the
+    // same shape with a shader), at the mark's own size. A shape, not a name.
     void draw_mark(HDC dc, int x, int y) {
-        const HBRUSH brush = CreateSolidBrush(ACCENT);
-        const HPEN pen = CreatePen(PS_SOLID, 1, ACCENT);
+        const HBRUSH brush = CreateSolidBrush(LIGHT);
+        const HPEN pen = CreatePen(PS_SOLID, 1, LIGHT);
         const HGDIOBJ old_brush = SelectObject(dc, brush);
         const HGDIOBJ old_pen = SelectObject(dc, pen);
-        const int w = dp(24);
-        const int h = dp(20);
+        const int w = dp(MARK_W);
+        const int h = dp(MARK_H);
         const int hw = w / 2;
         const int hh = h / 2;
         // The top triangle, then the two below it, each half the width.
@@ -503,7 +660,7 @@ namespace {
         rounded(dc, square, on ? ACCENT : TRACK, (on || hover) ? ACCENT : LINE_BRIGHT);
         if (on) {
             // The tick: two strokes in the on-accent ink.
-            const HPEN pen = CreatePen(PS_SOLID, dp(2), ON_ACCENT);
+            const HPEN pen = CreatePen(PS_SOLID, dp(EDGE_LIT), ON_ACCENT);
             const HGDIOBJ old = SelectObject(dc, pen);
             MoveToEx(dc, square.left + box / 4, square.top + box / 2, nullptr);
             LineTo(dc, square.left + box / 2 - dp(1), square.bottom - box / 4);
@@ -511,21 +668,23 @@ namespace {
             SelectObject(dc, old);
             DeleteObject(pen);
         }
-        RECT label_rect{ square.right + dp(PAD_ROW) + dp(2), row.top, row.right, row.bottom };
+        RECT label_rect{ square.right + dp(SPACE_3), row.top, row.right, row.bottom };
         text(dc, label_rect, label, g_state.body_font, hover ? TEXT : TEXT_DIM, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     void draw_button(HDC dc, const RECT& r, const std::wstring& label, bool primary, bool hover, bool enabled) {
-        COLORREF fill = primary ? ACCENT : CASE_BOTTOM;
+        // Lime is what you can act on: the one thing to do is lime, the other a raised slate plate
+        // that takes the lime's edge under the pointer, as a focused plate does in the menus.
+        COLORREF fill = primary ? ACCENT : RAISED;
         COLORREF edge = primary ? ACCENT : LINE;
         COLORREF ink = primary ? ON_ACCENT : TEXT_DIM;
         if (!enabled) {
-            fill = primary ? LINE : CASE_BOTTOM;
+            fill = primary ? LINE : RAISED;
             edge = LINE;
             ink = TEXT_DIM;
         } else if (hover) {
-            fill = primary ? BRASS_LIGHT : ROW_ON;
-            edge = primary ? BRASS_LIGHT : LINE_BRIGHT;
+            fill = primary ? ACCENT_BRIGHT : ROW_ON;
+            edge = primary ? ACCENT_BRIGHT : ACCENT;
             ink = primary ? ON_ACCENT : TEXT;
         }
         rounded(dc, r, fill, edge);
@@ -544,17 +703,19 @@ namespace {
         const HGDIOBJ old_bitmap = SelectObject(dc, bitmap);
 
         const Layout l = layout();
-        fill_gradient(dc, client, CASE_TOP, CASE_BOTTOM);
+        fill_rect(dc, client, GROUND);
 
-        // The lid: the mark, the title, the version; a rule beneath, as the case's lid has.
+        // The lid: deep slate, the mark in gold, the title in the display face, the version in
+        // mono; the gold lit edge beneath, as the menus' head has.
         const RECT head = scaled(l.head);
-        draw_mark(dc, dp(PAD), head.top + (head.bottom - head.top - dp(20)) / 2);
-        RECT title{ dp(PAD) + dp(24) + dp(PAD_ROW) + dp(4), head.top, head.right - dp(PAD), head.bottom };
+        fill_rect(dc, head, LID);
+        draw_mark(dc, dp(PAD), head.top + (head.bottom - head.top - dp(MARK_H)) / 2);
+        RECT title{ dp(PAD) + dp(MARK_W) + dp(SPACE_3), head.top, head.right - dp(PAD), head.bottom };
         text(dc, title, L"OoT Recompiled", g_state.title_font, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        text(dc, title, L"Setup, version " + widen(oot::build_info::version), g_state.caption_font, TEXT_DIM,
+        text(dc, title, L"Setup " + widen(oot::build_info::version), g_state.caption_font, TEXT_DIM,
              DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-        RECT rule{ 0, head.bottom - dp(RULE), head.right, head.bottom };
-        fill_rect(dc, rule, LINE);
+        RECT rule{ 0, head.bottom - dp(EDGE_LIT), head.right, head.bottom };
+        fill_rect(dc, rule, LIGHT);
 
         const bool choosing = g_state.stage == Stage::Choose;
         text(dc, scaled(l.where_label), choosing ? L"Install to" : L"Installed to", g_state.note_font, TEXT_DIM,
@@ -585,7 +746,7 @@ namespace {
             const int total = g_state.total > 0 ? g_state.total : 1;
             RECT done = bar;
             done.right = bar.left + static_cast<int>((static_cast<long long>(bar.right - bar.left) * g_state.done) / total);
-            if (done.right > done.left + dp(2)) {
+            if (done.right > done.left + dp(EDGE_LIT)) {
                 rounded(dc, done, ACCENT, ACCENT);
             }
             RECT under = scaled(l.report);
@@ -596,10 +757,10 @@ namespace {
             RECT report = scaled(l.report);
             const COLORREF tone = g_state.stage == Stage::Done ? OK_COLOR : BAD;
             RECT headline = report;
-            headline.bottom = headline.top + dp(24);
+            headline.bottom = headline.top + dp(SPACE_6);
             text(dc, headline, g_state.report, g_state.body_font, tone, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             RECT detail = report;
-            detail.top = headline.bottom + dp(4);
+            detail.top = headline.bottom + dp(SPACE_1);
             detail.bottom = scaled(l.primary).top - dp(PAD_ROW);
             text(dc, detail, g_state.detail, g_state.caption_font, TEXT_DIM, DT_LEFT | DT_WORDBREAK);
         }
@@ -652,7 +813,7 @@ namespace {
         }
         const RECT field = scaled(layout().field);
         // Inside the drawn frame, centered on its line.
-        const int text_h = dp(SIZE_NOTE) + dp(4);
+        const int text_h = dp(whole(SIZE_NOTE)) + dp(SPACE_1);
         const int top = field.top + ((field.bottom - field.top) - text_h) / 2;
         SetWindowPos(g_state.field, nullptr, field.left + dp(PAD_ROW), top, (field.right - field.left) - 2 * dp(PAD_ROW), text_h, SWP_NOZORDER);
         ShowWindow(g_state.field, g_state.stage == Stage::Choose ? SW_SHOW : SW_HIDE);
@@ -874,6 +1035,7 @@ int main() {
         return 1;
     }
     g_state.destination = suggested.wstring();
+    load_faces();
 
     // The Enter key on the EDIT would otherwise be swallowed by it; the window class handles the
     // keys for the whole window, and the EDIT hands the ones it does not use up.

@@ -14,7 +14,7 @@ body
 	font-family: var(--font-body);
 	font-weight: var(--weight-body);
 	font-size: var(--size-row);
-	color: var(--text);
+	color: var(--color-ink);
 	width: 100%;
 	height: 100%;
 }
@@ -25,7 +25,7 @@ body
 {
 	width: 100%;
 	height: 100%;
-	background-color: var(--scrim);
+	background-color: var(--color-scrim);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -68,12 +68,12 @@ body
 
 .case
 {
-	width: var(--case-width);
+	width: var(--panel-width);
 	max-height: var(--case-max-height);
-	padding: var(--pad);
-	border: var(--rule) var(--line);
+	padding: var(--space-4);
+	border: var(--rule) var(--color-line);
 	border-radius: var(--radius);
-	decorator: gradient(vertical var(--case-top) var(--case-bottom));
+	decorator: vertical-gradient(var(--color-slate-raised) var(--color-slate));
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
@@ -86,9 +86,9 @@ body
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding-bottom: var(--pad-row);
-	border-bottom: var(--rule) var(--line);
-	margin-bottom: var(--pad-row);
+	padding-bottom: var(--space-2);
+	border-bottom: var(--rule) var(--color-line);
+	margin-bottom: var(--space-2);
 }
 
 /* The head of the lid: the mark, then the title, on one line. */
@@ -100,21 +100,21 @@ body
 
 .head .mark
 {
-	margin-right: var(--pad-row-side);
+	margin-right: var(--space-3);
 }
 
 .title
 {
 	font-family: var(--font-display);
 	font-weight: var(--weight-display);
-	font-size: var(--size-title);
-	color: var(--text);
+	font-size: var(--size-display);
+	color: var(--color-ink);
 }
 
 .hint
 {
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 
 /* The frame rate counter (the user's ask of 2026-09-19): a small branded plate at the top right
@@ -124,19 +124,19 @@ body
 	position: absolute;
 	/* The side gap from the window's top edge while the title bar is hidden; under the bar,
 	 * by the same gap, while it shows (the shell sets the class from the bar's state). */
-	top: var(--pad-row-side);
-	right: var(--pad-row-side);
-	transition: top var(--duration-fast) linear-in-out;
-	padding: var(--pad-row) var(--pad-row-side);
-	border: var(--rule) var(--line);
-	border-left: var(--edge) var(--accent);
-	border-radius: var(--radius-tight);
-	decorator: gradient(vertical var(--case-top) var(--case-bottom));
+	top: var(--space-3);
+	right: var(--space-3);
+	transition: top var(--duration-fast) var(--ease);
+	padding: var(--space-2) var(--space-3);
+	border: var(--rule) var(--color-line);
+	border-left: var(--edge-focus) var(--color-lime);
+	border-radius: var(--radius);
+	decorator: vertical-gradient(var(--color-slate-raised) var(--color-slate));
 	display: flex;
 	align-items: center;
 	font-family: var(--font-mono);
-	font-size: var(--size-caption);
-	color: var(--text);
+	font-size: var(--size-label);
+	color: var(--color-ink);
 }
 
 .counter.under-bar
@@ -148,13 +148,13 @@ body
 {
 	width: var(--mark-small-w);
 	height: var(--mark-small-h);
-	margin-right: var(--pad-row);
+	margin-right: var(--space-2);
 }
 
 .counter .counter-unit
 {
-	color: var(--text-faint);
-	margin-left: var(--gap);
+	color: var(--color-faint);
+	margin-left: var(--rule);
 }
 
 /* The ROM browser (the user's notes of 2026-09-19): the folder line above the list, and the
@@ -165,64 +165,64 @@ body
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
-	padding: var(--pad-row) 0;
-	font-size: var(--size-caption);
-	color: var(--text-dim);
+	padding: var(--space-2) 0;
+	font-size: var(--size-label);
+	color: var(--color-dim);
 }
 
 .path-line .datum
 {
 	font-family: var(--font-mono);
-	color: var(--text);
+	color: var(--color-ink);
 }
 
 .entry-line
 {
 	display: flex;
 	align-items: center;
-	margin-top: var(--pad-row);
+	margin-top: var(--space-2);
 }
 
 .entry-line .name
 {
-	font-size: var(--size-caption);
-	color: var(--text-dim);
-	margin-right: var(--pad-row-side);
+	font-size: var(--size-label);
+	color: var(--color-dim);
+	margin-right: var(--space-3);
 }
 
 input.path-input
 {
 	flex: 1;
-	padding: var(--pad-row) var(--pad-row-side);
-	border: var(--rule) var(--line);
-	border-radius: var(--radius-tight);
-	background-color: var(--track);
+	padding: var(--space-2) var(--space-3);
+	border: var(--rule) var(--color-line);
+	border-radius: var(--radius);
+	background-color: var(--color-slate-deep);
 	font-family: var(--font-mono);
-	font-size: var(--size-caption);
-	color: var(--text);
-	caret-color: var(--accent);
+	font-size: var(--size-label);
+	color: var(--color-ink);
+	caret-color: var(--color-lime);
 }
 
 input.path-input:focus
 {
-	border-color: var(--accent);
+	border-color: var(--color-lime);
 }
 
 .btn
 {
-	margin-left: var(--pad-row-side);
-	padding: var(--pad-row) var(--pad-row-side);
-	border: var(--rule) var(--line);
-	border-radius: var(--radius-tight);
-	color: var(--text-dim);
+	margin-left: var(--space-3);
+	padding: var(--space-2) var(--space-3);
+	border: var(--rule) var(--color-line);
+	border-radius: var(--radius);
+	color: var(--color-dim);
 	cursor: pointer;
 }
 
 .btn:hover
 {
-	color: var(--text);
-	border-color: var(--accent);
-	background-color: var(--row-on);
+	color: var(--color-ink);
+	border-color: var(--color-lime);
+	background-color: var(--color-accent-wash);
 }
 
 /* A modal's lid stacks (the user's asks of 2026-09-19): the mark, the title and the close
@@ -244,17 +244,17 @@ input.path-input:focus
 .lid.stacked .hint
 {
 	display: block;
-	margin-top: var(--gap);
+	margin-top: var(--rule);
 }
 
 /* The rows. A track behind them so the case reads as a compartment with things set into it,
  * which is the whole conceit of the direction. */
 .rows
 {
-	background-color: var(--track);
-	border: var(--rule) var(--line);
-	border-radius: var(--radius-tight);
-	padding: var(--gap);
+	background-color: var(--color-slate-deep);
+	border: var(--rule) var(--color-line);
+	border-radius: var(--radius);
+	padding: var(--rule);
 	display: flex;
 	flex-direction: column;
 }
@@ -264,51 +264,51 @@ input.path-input:focus
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: var(--pad-row) var(--pad-row-side);
-	border-left: var(--edge) transparent;
-	transition: background-color var(--duration-fast) linear-in-out,
-	            border-left-color var(--duration-fast) linear-in-out;
+	padding: var(--space-2) var(--space-3);
+	border-left: var(--edge-focus) transparent;
+	transition: background-color var(--duration-fast) var(--ease),
+	            border-left-color var(--duration-fast) var(--ease);
 }
 
 /* The pointer over a row, now that the mouse reaches the documents: the track's lift without
  * the edge, so the focused row stays the one moment. */
 .row:hover
 {
-	background-color: var(--row-on);
+	background-color: var(--color-accent-wash);
 }
 
 /* THE ONE MOMENT. The focused row lifts out of the track and its left edge takes the light. It
  * is the only place the accent appears, which is what keeps it meaning something. */
 .row.on
 {
-	background-color: var(--row-on);
-	border-left: var(--edge) var(--accent);
+	background-color: var(--color-accent-wash);
+	border-left: var(--edge-focus) var(--color-lime);
 }
 
 .row .label
 {
-	color: var(--text-dim);
+	color: var(--color-dim);
 	/* A LABEL IS NEVER SQUEEZED (the user, 2026-10-09, of the HUD row in the panel: "description
 	 * crushes it"): a long value or action text folds onto more lines rather than pressing the
 	 * label narrower, and keeps a gap from it. */
 	flex-shrink: 0;
-	margin-right: var(--pad-row-side);
+	margin-right: var(--space-3);
 }
 
 .row.on .label
 {
-	color: var(--text);
+	color: var(--color-ink);
 }
 
 .row .value
 {
 	font-family: var(--font-mono);
-	color: var(--text-dim);
+	color: var(--color-dim);
 }
 
 .row.on .value
 {
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 /* An action row's value (Controls, Play, Quit) says nothing at rest; the text shows while
@@ -326,15 +326,15 @@ input.path-input:focus
 {
 	display: flex;
 	align-items: center;
-	margin-top: var(--pad-row);
-	padding: var(--pad-row) var(--pad-row-side) var(--pad-row-side);
-	border-top: var(--rule) var(--line);
+	margin-top: var(--space-2);
+	padding: var(--space-2) var(--space-3) var(--space-3);
+	border-top: var(--rule) var(--color-line);
 }
 
 .divider-label
 {
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 	text-transform: uppercase;
 	letter-spacing: var(--divider-tracking);
 }
@@ -351,14 +351,14 @@ input.path-input:focus
 .row .row-note
 {
 	flex: 0 0 100%;
-	margin-top: var(--pad-row);
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	margin-top: var(--space-2);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 
 .row.on .row-note
 {
-	color: var(--text-dim);
+	color: var(--color-dim);
 }
 
 .row.on .value .act,
@@ -371,14 +371,14 @@ input.path-input:focus
  * settings screen. */
 .foot
 {
-	margin-top: var(--pad-row);
-	padding-top: var(--pad-row);
-	border-top: var(--rule) var(--line);
+	margin-top: var(--space-2);
+	padding-top: var(--space-2);
+	border-top: var(--rule) var(--color-line);
 	display: flex;
 	justify-content: space-between;
-	column-gap: var(--pad);
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	column-gap: var(--space-4);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 
 /* A FOOT OF TWO IN THE PANEL IS STACKED (the user, 2026-10-09, of the lighting menu in the panel:
@@ -390,7 +390,7 @@ input.path-input:focus
 {
 	flex-direction: column;
 	justify-content: flex-start;
-	row-gap: var(--pad-row);
+	row-gap: var(--space-2);
 }
 
 /* About, which is a reading surface rather than a control surface, so it gets prose spacing and
@@ -398,29 +398,29 @@ input.path-input:focus
 .prose
 {
 	display: block;
-	color: var(--text-dim);
+	color: var(--color-dim);
 	font-size: var(--size-note);
-	margin-bottom: var(--pad-row);
+	margin-bottom: var(--space-2);
 }
 
 .field
 {
 	display: flex;
 	justify-content: space-between;
-	padding: var(--pad-row) 0;
-	border-bottom: var(--rule) var(--line);
+	padding: var(--space-2) 0;
+	border-bottom: var(--rule) var(--color-line);
 }
 
 .field .name
 {
-	color: var(--text-dim);
+	color: var(--color-dim);
 }
 
 .field .datum
 {
 	font-family: var(--font-mono);
-	font-size: var(--size-caption);
-	color: var(--text);
+	font-size: var(--size-label);
+	color: var(--color-ink);
 }
 
 .heading
@@ -429,9 +429,9 @@ input.path-input:focus
 	font-family: var(--font-display);
 	font-weight: var(--weight-display);
 	font-size: var(--size-heading);
-	color: var(--text);
-	margin-top: var(--pad-row);
-	margin-bottom: var(--pad-row);
+	color: var(--color-ink);
+	margin-top: var(--space-2);
+	margin-bottom: var(--space-2);
 }
 
 /* A scrolling region: About's body (the signature and the changelog made it longer than any
@@ -443,15 +443,15 @@ input.path-input:focus
 	overflow-y: auto;
 	/* Room between the text and the bar at the right, and the same at the left, so the
 	 * scrolling region reads as a compartment rather than text pressed against a rail. */
-	padding-left: var(--pad-row-side);
-	padding-right: var(--pad);
+	padding-left: var(--space-3);
+	padding-right: var(--space-4);
 	box-sizing: border-box;
 }
 
 scrollbarvertical
 {
 	width: var(--scroll);
-	background-color: var(--track);
+	background-color: var(--color-slate-deep);
 }
 
 scrollbarvertical sliderarrowdec,
@@ -462,35 +462,35 @@ scrollbarvertical sliderarrowinc
 
 scrollbarvertical slidertrack
 {
-	background-color: var(--track);
+	background-color: var(--color-slate-deep);
 }
 
 scrollbarvertical sliderbar
 {
-	background-color: var(--line);
-	border-radius: var(--radius-tight);
+	background-color: var(--color-line);
+	border-radius: var(--radius);
 }
 
 /* A second line under the foot: the launcher's signature line, a click target that opens
  * About (the user's ask of 2026-09-19). */
 .foot-more
 {
-	padding-top: var(--pad-row);
+	padding-top: var(--space-2);
 	display: flex;
 	justify-content: space-between;
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 
 .link
 {
-	color: var(--text-dim);
+	color: var(--color-dim);
 	cursor: pointer;
 }
 
 .link:hover
 {
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 /* The changelog, newest version first: a version and its date on one line, the title, the
@@ -498,8 +498,8 @@ scrollbarvertical sliderbar
 .entry
 {
 	display: block;
-	padding: var(--pad-row) 0;
-	border-bottom: var(--rule) var(--line);
+	padding: var(--space-2) 0;
+	border-bottom: var(--rule) var(--color-line);
 }
 
 .entry-head
@@ -511,14 +511,14 @@ scrollbarvertical sliderbar
 .entry-version
 {
 	font-family: var(--font-mono);
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 .entry-date
 {
 	font-family: var(--font-mono);
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 
 .entry-title
@@ -526,30 +526,30 @@ scrollbarvertical sliderbar
 	display: block;
 	font-family: var(--font-display);
 	font-weight: var(--weight-display);
-	color: var(--text);
+	color: var(--color-ink);
 }
 
 .entry-summary
 {
 	display: block;
-	color: var(--text-dim);
+	color: var(--color-dim);
 	font-size: var(--size-note);
 }
 
 .entry-section
 {
 	display: block;
-	color: var(--text);
-	font-size: var(--size-caption);
-	margin-top: var(--pad-row);
+	color: var(--color-ink);
+	font-size: var(--size-label);
+	margin-top: var(--space-2);
 }
 
 .entry-item
 {
 	display: block;
-	color: var(--text-dim);
+	color: var(--color-dim);
 	font-size: var(--size-note);
-	padding-left: var(--pad-row-side);
+	padding-left: var(--space-3);
 }
 
 /* THE ACTIONS. Play and Quit are not settings and the user asked twice for them to stop looking
@@ -561,9 +561,9 @@ scrollbarvertical sliderbar
  * focus treatment is the list's own, which is what keeps one vocabulary across the screen. */
 .actions
 {
-	margin-top: var(--pad-row);
-	padding-top: var(--pad-row);
-	border-top: var(--rule) var(--line);
+	margin-top: var(--space-2);
+	padding-top: var(--space-2);
+	border-top: var(--rule) var(--color-line);
 	display: flex;
 	align-items: center;
 }
@@ -578,13 +578,13 @@ scrollbarvertical sliderbar
  * the same amount of gap between the buttons themselves and the border above them"). One token in
  * both places, so they cannot drift apart.
  *
- * This read `var(--gap)` and looked correct, which is why it survived a review: `--gap` is a ONE
+ * This read `var(--rule)` and looked correct, which is why it survived a review: `--gap` is a ONE
  * dp hairline for a divider, not a step on the spacing scale, so the two buttons were a pixel
  * apart and touching to the eye. */
 .actions .act-btn
 {
 	flex: 1 1 0;
-	margin-right: var(--pad-row);
+	margin-right: var(--space-2);
 }
 
 .actions .act-btn:last-child
@@ -600,7 +600,7 @@ scrollbarvertical sliderbar
 .actions.pairs
 {
 	flex-wrap: wrap;
-	gap: var(--pad-row);
+	gap: var(--space-2);
 }
 
 .actions.pairs .act-btn
@@ -611,57 +611,67 @@ scrollbarvertical sliderbar
 
 .act-btn
 {
+	position: relative;
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	min-height: var(--act-height);
 	padding: 0 var(--pad-act-side);
-	border-radius: var(--radius-tight);
-	border: var(--rule) var(--line);
-	transition: background-color var(--duration-fast) linear-in-out,
-	            border-color var(--duration-fast) linear-in-out;
+	border-radius: var(--radius);
+	border: var(--rule) var(--color-line);
+	transition: background-color var(--duration-fast) var(--ease),
+	            border-color var(--duration-fast) var(--ease);
 }
 
 /* Quit is the quiet one: it is always available and almost never what you came for. */
 .act-quit
 {
 	background-color: transparent;
-	color: var(--text-dim);
+	color: var(--color-dim);
 }
 
 .act-quit:hover
 {
-	color: var(--text);
-	border-color: var(--line-bright);
+	color: var(--color-ink);
+	border-color: var(--color-faint);
 }
 
 /* Play is the one moment on this screen, which is why it carries the brass. */
 .act-play
 {
-	background-color: var(--accent);
-	border-color: var(--accent);
-	color: var(--on-accent);
+	background-color: var(--color-lime);
+	border-color: var(--color-lime);
+	color: var(--color-on-lime);
 }
 
+/* Under the pointer the lime brightens, as the website's primary button does (the user, 2026-10-13:
+ * "mouse hover styles still show gold bg on primary button rather than lime"). */
 .act-play:hover
 {
-	background-color: var(--brass-light);
-	border-color: var(--brass-light);
+	background-color: var(--color-lime-bright);
+	border-color: var(--color-lime-bright);
 }
 
-/* Focused, by keyboard or pad. The same lift the list uses, so the screen reads as one thing. */
-.act-btn.on
+/* FOCUSED, BY KEYBOARD OR PAD: A RING A FEW DP OUTSIDE THE BUTTON, the button keeping its own
+ * fill (the user, 2026-10-13: "I don't like that the button is gold when it's the focused button.
+ * I would rather maybe add an outline that's ... a couple pixels out from the edge of the button").
+ * RmlUi has no outline and our renderer draws no box-shadow, so the ring is an element of its own,
+ * added to every action button by the program as the documents load (ui_shell.cpp). */
+.act-btn .focus-ring
 {
-	border-color: var(--accent);
-	background-color: var(--row-on);
-	color: var(--text);
+	display: none;
+	position: absolute;
+	left: var(--focus-ring-out);
+	top: var(--focus-ring-out);
+	right: var(--focus-ring-out);
+	bottom: var(--focus-ring-out);
+	border: var(--focus-ring-width) var(--color-lime);
+	pointer-events: none;
 }
 
-.act-play.on
+.act-btn.on .focus-ring
 {
-	background-color: var(--brass-light);
-	border-color: var(--brass-peak);
-	color: var(--on-accent);
+	display: block;
 }
 
 .act-label
@@ -680,30 +690,30 @@ scrollbarvertical sliderbar
 .row .value .step
 {
 	display: inline-block;
-	color: var(--text-faint);
+	color: var(--color-faint);
 	min-width: var(--step-width);
 	text-align: center;
-	padding: var(--pad-row) 0;
-	transition: color var(--duration-fast) linear-in-out;
+	padding: var(--space-2) 0;
+	transition: color var(--duration-fast) var(--ease);
 }
 
 .row.on .value .step,
 .row:hover .value .step
 {
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 /* A step that cannot go anywhere is drawn spent rather than removed, so the row keeps its shape
  * as it is walked and the eye is not asked to re-find the value. */
 .row .value .step.spent
 {
-	color: var(--line);
+	color: var(--color-line);
 }
 
 .row.on .value .step.spent,
 .row:hover .value .step.spent
 {
-	color: var(--line-bright);
+	color: var(--color-faint);
 }
 
 /* The value keeps one width whatever it reads, so the two chevrons hold still while a row is
@@ -725,8 +735,8 @@ scrollbarvertical sliderbar
 	display: inline-block;
 	width: var(--check);
 	height: var(--check);
-	border: var(--rule) var(--text-faint);
-	border-radius: var(--radius-tight);
+	border: var(--rule) var(--color-faint);
+	border-radius: var(--radius);
 	vertical-align: middle;
 }
 
@@ -735,8 +745,8 @@ scrollbarvertical sliderbar
 	display: none;
 	margin: var(--check-inset);
 	height: var(--check-tick);
-	background-color: var(--text-dim);
-	border-radius: var(--radius-tight);
+	background-color: var(--color-dim);
+	border-radius: var(--radius);
 }
 
 .row .value .check.ticked .tick
@@ -747,13 +757,13 @@ scrollbarvertical sliderbar
 .row.on .value .check,
 .row:hover .value .check
 {
-	border-color: var(--accent);
+	border-color: var(--color-lime);
 }
 
 .row.on .value .check .tick,
 .row:hover .value .check .tick
 {
-	background-color: var(--accent);
+	background-color: var(--color-lime);
 }
 
 .row .value .step-gap
@@ -769,34 +779,34 @@ scrollbarvertical sliderbar
 .act-danger
 {
 	background-color: transparent;
-	border-color: var(--bad);
-	color: var(--bad);
+	border-color: var(--color-error);
+	color: var(--color-error);
 }
 
 .act-danger:hover
 {
-	background-color: var(--bad);
-	color: var(--on-accent);
+	background-color: var(--color-error);
+	color: var(--color-on-lime);
 }
 
 .act-danger.armed
 {
-	background-color: var(--bad);
-	border-color: var(--bad);
-	color: var(--on-accent);
+	background-color: var(--color-error);
+	border-color: var(--color-error);
+	color: var(--color-on-lime);
 }
 
 /* The path rows on the files surface. A path is long and a label is short, so the value takes the
  * room and truncates from the left, where the interesting end of a path is not. */
 #files-rows .row .value
 {
-	font-size: var(--size-caption);
-	color: var(--text-dim);
+	font-size: var(--size-label);
+	color: var(--color-dim);
 }
 
 #files-rows .row.on .value
 {
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 /* A path is long and a label is short, so the label keeps its own column and the path takes the
@@ -820,10 +830,10 @@ scrollbarvertical sliderbar
 {
 	display: none;
 	flex: 0 0 auto;
-	margin-left: var(--pad-row-side);
-	font-size: var(--size-caption);
+	margin-left: var(--space-3);
+	font-size: var(--size-label);
 	font-weight: 600;
-	color: var(--accent);
+	color: var(--color-lime);
 }
 
 #files-rows .row.on .open,
@@ -841,17 +851,17 @@ scrollbarvertical sliderbar
 .act-quit:focus,
 .act-quit.on
 {
-	color: var(--text);
-	border-color: var(--accent);
-	background-color: var(--row-on);
+	color: var(--color-ink);
+	border-color: var(--color-lime);
+	background-color: var(--color-accent-wash);
 }
 
 .act-danger:focus,
 .act-danger.on
 {
-	background-color: var(--bad);
-	border-color: var(--bad);
-	color: var(--on-accent);
+	background-color: var(--color-error);
+	border-color: var(--color-error);
+	color: var(--color-on-lime);
 }
 
 /* Armed, the destructive button is the question itself: filled, and its edge lit in the brass so
@@ -860,19 +870,19 @@ scrollbarvertical sliderbar
 .act-danger.armed:hover,
 .act-danger.armed.on
 {
-	background-color: var(--bad);
-	border-color: var(--brass-light);
-	color: var(--on-accent);
+	background-color: var(--color-error);
+	border-color: var(--color-gold-bright);
+	color: var(--color-on-lime);
 }
 
 /* The first run questions. A reading surface with two answers, so it gets prose spacing rather
  * than the rows' density, and the question itself carries the weight the rows' labels do not. */
 .ask-body
 {
-	background-color: var(--track);
-	border: var(--rule) var(--line);
-	border-radius: var(--radius-tight);
-	padding: var(--pad);
+	background-color: var(--color-slate-deep);
+	border: var(--rule) var(--color-line);
+	border-radius: var(--radius);
+	padding: var(--space-4);
 	display: block;
 }
 
@@ -881,9 +891,9 @@ scrollbarvertical sliderbar
 	display: block;
 	font-family: var(--font-display);
 	font-weight: var(--weight-display);
-	font-size: var(--size-title);
-	color: var(--text);
-	margin-bottom: var(--pad-row);
+	font-size: var(--size-display);
+	color: var(--color-ink);
+	margin-bottom: var(--space-2);
 }
 
 /* The frame recorder's plate (the user's ask of 2026-09-22): the counter's plate in the opposite
@@ -892,7 +902,7 @@ scrollbarvertical sliderbar
  * one is a button. */
 .counter.recorder
 {
-	left: var(--pad-row-side);
+	left: var(--space-3);
 	right: auto;
 	/* NO `top` HERE ON PURPOSE. It takes the counter's, and the `under-bar` class moves both of
 	 * them together when the title bar appears (the user's ask of 2026-09-23, so the two sit
@@ -912,8 +922,8 @@ scrollbarvertical sliderbar
 	/* The lit edge goes on the outside edge of the plate, which is the left for the counter and
 	 * the right for this one, so the two read as a mirrored pair rather than as two of the same
 	 * thing that happen to be in different corners. */
-	border-left: var(--rule) var(--line);
-	border-right: var(--edge) var(--accent);
+	border-left: var(--rule) var(--color-line);
+	border-right: var(--edge-focus) var(--color-lime);
 	cursor: pointer;
 }
 
@@ -921,7 +931,7 @@ scrollbarvertical sliderbar
  * that frames are being written is visible without reading anything. */
 .counter.recorder.on
 {
-	border-right-color: var(--record);
+	border-right-color: var(--color-error);
 }
 
 /* Between the word and the time, so it divides them as well as saying what state the recorder is
@@ -932,10 +942,10 @@ scrollbarvertical sliderbar
 	width: var(--dot);
 	height: var(--dot);
 	border-radius: var(--dot);
-	background-color: var(--record-idle);
-	margin-left: var(--pad-row);
-	margin-right: var(--pad-row);
-	transition: background-color var(--duration-fast) linear-in-out;
+	background-color: var(--color-faint);
+	margin-left: var(--space-2);
+	margin-right: var(--space-2);
+	transition: background-color var(--duration-fast) var(--ease);
 }
 
 /* The dot already provides the gap on this side. */
@@ -946,7 +956,7 @@ scrollbarvertical sliderbar
 
 .counter.recorder.on .dot
 {
-	background-color: var(--record);
+	background-color: var(--color-error);
 }
 
 /* Draining: the frames are taken and the encoders are catching up. The dot goes to the accent
@@ -954,14 +964,14 @@ scrollbarvertical sliderbar
  * otherwise. */
 .counter.recorder.saving .dot
 {
-	background-color: var(--accent);
+	background-color: var(--color-lime);
 }
 
 /* A write failed. The one place the plate uses the fault color, and it stays until the next
  * recording starts. */
 .counter.recorder.failed .dot
 {
-	background-color: var(--bad);
+	background-color: var(--color-error);
 }
 
 /* THE ALWAYS ON OVERLAYS MUST NOT SWALLOW CLICKS, and until 2026-09-22 they did.
@@ -1020,11 +1030,11 @@ body.overlay
 .counter.update
 {
 	top: auto;
-	bottom: var(--pad-row-side);
-	left: var(--pad-row-side);
+	bottom: var(--space-3);
+	left: var(--space-3);
 	right: auto;
-	border-left: var(--rule) var(--line);
-	border-right: var(--edge) var(--accent);
+	border-left: var(--rule) var(--color-line);
+	border-right: var(--edge-focus) var(--color-lime);
 	cursor: pointer;
 }
 
@@ -1038,16 +1048,16 @@ body.overlay
 }
 .row.mrow .thumb
 {
-	width: 80dp;
-	height: 60dp;
-	margin-right: var(--pad-row-side);
-	border: var(--rule) var(--line);
-	border-radius: var(--radius-tight);
+	width: var(--thumb-width);
+	height: var(--thumb-height);
+	margin-right: var(--space-3);
+	border: var(--rule) var(--color-line);
+	border-radius: var(--radius);
 	decorator: none;
 }
 .row.mrow .thumb.empty
 {
-	background-color: var(--track);
+	background-color: var(--color-slate-deep);
 }
 .row.mrow .label
 {
@@ -1058,10 +1068,257 @@ body.overlay
 {
 	display: block;
 	font-family: var(--font-mono);
-	font-size: var(--size-caption);
-	color: var(--text-faint);
+	font-size: var(--size-label);
+	color: var(--color-faint);
 }
 .row.mrow .value
 {
-	font-size: var(--size-caption);
+	font-size: var(--size-label);
+}
+
+/* A PAGE IN THE SHELL (the menus plan, phase 96). The section's document is laid into the box the
+ * shell leaves for its page (shell.rml, #sh-host; the shell sets this document's position and size
+ * to it and puts the class on its body). The shell draws the head, the section's name, the dial
+ * and the prompts, so the page drops its own lid, foot and scrim and keeps only what it holds; the
+ * list fills the box and scrolls inside it. */
+body.in-shell .scrim,
+body.in-shell .frame
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	background-color: transparent;
+}
+
+body.in-shell .case,
+body.in-shell .case.window,
+body.in-shell .scrim.side .case
+{
+	width: 100%;
+	height: 100%;
+	max-height: 100%;
+	padding: 0;
+	border-width: 0;
+	decorator: none;
+	background-color: transparent;
+}
+
+body.in-shell .lid,
+body.in-shell .foot
+{
+	display: none;
+}
+
+body.in-shell .rows.long,
+body.in-shell .case .body
+{
+	flex: 1 1 auto;
+	min-height: 0;
+	max-height: none;
+}
+
+/* THE PLATES (the menus plan, phase 100, the design decision's rows, C Medallion): in the shell
+ * each row is a raised plate on the panel's ground with air between them, a ring at its left with
+ * the row's glyph in it, the label in ink, and the value drawn by its kind: a short set side by
+ * side with the one in force gold, or a tick per option with the one in force lit beside its words.
+ * The focused plate takes the lime: its edge, its ring and its glyph, its ticks. */
+body.in-shell .rows
+{
+	background-color: transparent;
+	border-width: 0;
+	padding: 0;
+}
+
+body.in-shell .row
+{
+	min-height: var(--plate-min-height);
+	margin-bottom: var(--plate-gap);
+	padding: var(--plate-pad-y) var(--plate-pad-x) var(--plate-pad-y) var(--space-4);
+	background-color: var(--color-slate-raised);
+	border-left: var(--edge-focus) transparent;
+}
+
+body.in-shell .row:hover
+{
+	background-color: var(--color-plate-on);
+}
+
+body.in-shell .row.on
+{
+	background-color: var(--color-plate-on);
+	border-left-color: var(--color-lime);
+}
+
+body.in-shell .row .label
+{
+	flex: 1 1 auto;
+	color: var(--color-ink);
+}
+
+body.in-shell .divider
+{
+	border-top-width: 0;
+	margin-top: var(--space-2);
+	padding-left: 0;
+}
+
+.row .mi
+{
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: var(--plate-ring);
+	height: var(--plate-ring);
+	margin-right: var(--space-4);
+	border: var(--edge-lit) var(--color-gold);
+	border-radius: var(--plate-ring);
+}
+
+/* The glyph is a decorator, not an svg element: a page is laid into the shell's box after it is
+ * first laid out, and an svg element keeps drawing where it was laid out before the move (seen by
+ * the harness as the rows' icons drawn round the dial, 2026-10-13). A decorator follows its
+ * element. It draws in the icon's own white; the ring carries the focus's lime. */
+.row .mi-ic
+{
+	width: var(--plate-glyph);
+	height: var(--plate-glyph);
+}
+
+.row.on .mi
+{
+	border-color: var(--color-lime);
+}
+
+.row .value .choices
+{
+	display: inline-flex;
+	vertical-align: middle;
+	font-family: var(--font-mono);
+	font-size: var(--size-note);
+}
+
+.row .value .pick
+{
+	padding: var(--space-2) var(--space-3);
+	border: var(--rule) var(--color-line);
+	color: var(--color-faint);
+	margin-left: var(--plate-pick-join);
+}
+
+.row .value .pick:hover
+{
+	color: var(--color-ink);
+	border-color: var(--color-faint);
+}
+
+.row .value .pick.in
+{
+	background-color: var(--color-gold);
+	border-color: var(--color-gold);
+	color: var(--color-on-gold);
+}
+
+.row .value .ticks
+{
+	display: inline-flex;
+	vertical-align: middle;
+	align-items: center;
+	margin: 0 var(--space-2);
+}
+
+.row .value .tk
+{
+	width: var(--tick-width);
+	height: var(--tick-height);
+	margin-left: var(--tick-gap);
+	background-color: var(--color-line);
+}
+
+.row .value .tk.in
+{
+	background-color: var(--color-gold);
+}
+
+.row.on .value .tk.in
+{
+	background-color: var(--color-lime);
+}
+
+body.in-shell .row .value .shown
+{
+	color: var(--color-gold);
+}
+
+body.in-shell .row.on .value .shown
+{
+	color: var(--color-ink);
+}
+
+/* AN ACTION ROW'S WORDS FOLD, AND NEVER COVER ITS NAME (the user, 2026-10-13, of the Debugging row in
+ * the docked panel: "Everything starts to overlap"; its "Toggles for development, not for playing"
+ * was drawn over "Debugging"). A value holds one line at its own width, so a long action text ran
+ * left over the label once the panel was narrower than both. On an action row the label keeps its
+ * width and the words take what is left, folding onto more lines at the right. */
+body.in-shell .row.acting .label
+{
+	flex: 0 0 auto;
+}
+
+body.in-shell .row.acting .value
+{
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: normal;
+	text-align: right;
+}
+
+/* A plate's value holds its parts on one line (the steps, the ticks, the words), at its own width.
+ * Not a flex box: a value that is bare words (the controls' device, a path) would not be drawn in
+ * one; the ticks and the choices are inline flex boxes inside it instead. */
+body.in-shell .row .value
+{
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+/* A page that keeps its foot in the shell, for what it says (the controls' device). */
+body.in-shell .foot.keep
+{
+	display: flex;
+	border-top-width: 0;
+}
+
+body.in-shell .foot.keep .hide-in-shell
+{
+	display: none;
+}
+
+/* Your files in the shell: its list fills the page's box and scrolls in it, rather than running
+ * past the box over the prompts; the open link keeps its own room after the path. */
+body.in-shell #files-rows
+{
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+body.in-shell #files-rows .row .open
+{
+	margin-left: var(--space-3);
+}
+
+/* The ROM browser in the shell: a list of files, so its plates are slim and several show on the
+ * launcher's short page; the list scrolls in the box between the folder line and the path. */
+body.in-shell #browse-rows
+{
+	overflow-y: auto;
+}
+
+body.in-shell #browse-rows .row
+{
+	min-height: var(--plate-list-min-height);
+	margin-bottom: var(--plate-list-gap);
+	padding-top: var(--plate-list-pad-y);
+	padding-bottom: var(--plate-list-pad-y);
 }

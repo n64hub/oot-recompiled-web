@@ -501,7 +501,6 @@ namespace {
         rt.glowTest = g_lighting.glow_test;
         rt.shaftStrength = g_lighting.shaft_strength;
         rt.shaftLength = g_lighting.shaft_length;
-        rt.drawnBeam = g_lighting.drawn_beam;
         // And room for what follows them: up to eight bodies the dust collides with (renderer
         // patch 0042), and up to twelve beams and windows the renderer finds among the draws
         // (patches 0029 and 0032), so a scene whose list is full still has them all.
@@ -838,10 +837,6 @@ bool oot::rt_state::light_effects_traced() {
     return (oot::rt_state::level() >= 2) && (g_lighting.light_strength > 0.0f) && (g_lighting.experiment != effects_untraced_rung);
 }
 
-bool oot::rt_state::window_rays_hidden() {
-    return oot::rt_state::light_effects_traced() && (g_lighting.shaft_strength > 0.0f) && (g_lighting.drawn_beam == 0);
-}
-
 int oot::rt_state::glow_test() {
     return g_lighting.glow_test;
 }
@@ -993,17 +988,27 @@ namespace {
 
 } // namespace
 
+namespace {
+    std::atomic<int> g_inset_left{ 0 };
+    std::atomic<int> g_inset_right{ 0 };
+}
+
 void oot::renderer::set_picture_inset(int left, int right) {
     if (g_app == nullptr || g_app->sharedQueueResources == nullptr) {
         return;
     }
+    g_inset_left.store(std::max(left, 0), std::memory_order_relaxed);
+    g_inset_right.store(std::max(right, 0), std::memory_order_relaxed);
 #ifdef __EMSCRIPTEN__
-    // A page's RT64 has no picture inset (the video recorder's, rt64-patches/0053, which a page has no use for).
-    (void)left;
-    (void)right;
+    // A page's RT64 has no picture inset (rt64-patches/0053's, the video recorder's, which stays out of a page).
 #else
     g_app->sharedQueueResources->setPictureInset(static_cast<uint32_t>(std::max(left, 0)), static_cast<uint32_t>(std::max(right, 0)));
 #endif
+}
+
+void oot::renderer::picture_inset(int& left, int& right) {
+    left = g_inset_left.load(std::memory_order_relaxed);
+    right = g_inset_right.load(std::memory_order_relaxed);
 }
 
 void oot::renderer::set_picture(const PictureValues& values) {

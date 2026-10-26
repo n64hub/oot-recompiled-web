@@ -62,7 +62,9 @@ namespace oot::input {
             { "photo_closer",     "Closer",          0 },
             { "photo_further",    "Further",         0 },
             { "photo_reset",      "Put the camera back", 0 },
-            { "photo_hud",        "Show or hide the HUD", 0 },
+            { "photo_hud",        "Show, dim or hide the HUD", 0 },
+            { "photo_guide",      "Show or hide the button guide", 0 },
+            { "photo_shot",       "Take a picture",  0 },
             { "hud_toggle",       "HUD",             0 },
         };
 
@@ -136,6 +138,42 @@ namespace oot::input {
 
         void set_binding(InputBindings& bindings, GameInput input, int slot, const Field& field) {
             bindings[static_cast<size_t>(input)][static_cast<size_t>(slot)] = field;
+        }
+
+        // Whether another input read in the same place already has this key or button.
+        bool clashes(const InputBindings& bindings, GameInput input, const Field& field) {
+            for (int i = 0; i < INPUT_COUNT; ++i) {
+                const GameInput other = static_cast<GameInput>(i);
+                if (other == input || (read_in(other) & read_in(input)) == 0) {
+                    continue;
+                }
+                for (const Field& f : bindings[static_cast<size_t>(i)]) {
+                    if (f == field) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // A NEW DEFAULT NEVER TAKES A KEY OR BUTTON THE PERSON ALREADY USES (the user, 2026-10-13:
+        // "if I've already utilized that button and it would conflict within the context of where
+        // it's being utilized, it will not override it. It has to check for those conflicts
+        // first"). An input the file has no line for is newer than the file and holds its
+        // default; that default stays only where nothing read in the same place has it, and the
+        // row is otherwise left empty for the person to fill on the controls screen.
+        using Seen = std::array<bool, INPUT_COUNT>;
+        void settle_new_defaults(InputBindings& bindings, const Seen& seen) {
+            for (int i = 0; i < INPUT_COUNT; ++i) {
+                if (seen[static_cast<size_t>(i)]) {
+                    continue;
+                }
+                for (Field& f : bindings[static_cast<size_t>(i)]) {
+                    if (f.kind != FieldKind::None && clashes(bindings, static_cast<GameInput>(i), f)) {
+                        f = Field{};
+                    }
+                }
+            }
         }
 
     } // namespace
@@ -221,7 +259,7 @@ namespace oot::input {
         // F7 and F8, beside the quick keys and free of the documents'; no pad default either.
         set_binding(out, GameInput::RecordVideo, 0, key_field(SDL_SCANCODE_F7));
         set_binding(out, GameInput::PauseVideo, 0, key_field(SDL_SCANCODE_F8));
-        // F10 for photo mode, free of every other; no pad default, like the rest of the program's.
+        // F10 for photo mode, free of every other.
         set_binding(out, GameInput::PhotoMode, 0, key_field(SDL_SCANCODE_F10));
         // Photo mode's camera on the keys the game's own moves are on, which a frozen game does
         // not read: WASD moves, IJKL turns, R and E up and down, the arrows closer and further,
@@ -241,6 +279,10 @@ namespace oot::input {
         set_binding(out, GameInput::PhotoReset,     0, key_field(SDL_SCANCODE_LSHIFT));
         // H for the HUD, a key nothing else has.
         set_binding(out, GameInput::PhotoHud,       0, key_field(SDL_SCANCODE_H));
+        // C for the button guide (the controls), a key a frozen game does not read.
+        set_binding(out, GameInput::PhotoGuide,     0, key_field(SDL_SCANCODE_C));
+        // Space to take a picture: the game's own A, which a frozen game does not read.
+        set_binding(out, GameInput::PhotoShot,      0, key_field(SDL_SCANCODE_SPACE));
         // Tab for the HUD's fading, the key games use for a HUD or an overview.
         set_binding(out, GameInput::HudToggle,      0, key_field(SDL_SCANCODE_TAB));
     }
@@ -292,6 +334,10 @@ namespace oot::input {
         // click as its own button on both pads, so nothing here is PlayStation specific beyond
         // the fact that no other controller has one to press.
         set_binding(out, GameInput::Menu,       1, button_field(SDL_CONTROLLER_BUTTON_TOUCHPAD));
+        // PHOTO MODE ON THE LEFT STICK'S PRESS, in and out (the user, 2026-10-13: "all of the
+        // photo mode options set to some sort of default for every type of gamepad"). Every pad
+        // has one, the game's layout leaves it free, and the right stick's press is the HUD's.
+        set_binding(out, GameInput::PhotoMode,  0, button_field(SDL_CONTROLLER_BUTTON_LEFTSTICK));
         // Photo mode's camera: the left stick moves it, the right stick turns it, the shoulders
         // raise and lower it (the user, 2026-10-09: "either do both two buttons or both one
         // buttons"), the D-pad's up and down bring it closer and further, B's button puts it back.
@@ -310,6 +356,10 @@ namespace oot::input {
         set_binding(out, GameInput::PhotoReset,     0, button_field(SDL_CONTROLLER_BUTTON_X));
         // The top face button for the HUD: a frozen game reads none of the face buttons.
         set_binding(out, GameInput::PhotoHud,       0, button_field(SDL_CONTROLLER_BUTTON_Y));
+        // The right face button for the button guide, free while the game is frozen.
+        set_binding(out, GameInput::PhotoGuide,     0, button_field(SDL_CONTROLLER_BUTTON_B));
+        // The bottom face button takes the picture, as a shutter: free while the game is frozen.
+        set_binding(out, GameInput::PhotoShot,      0, button_field(SDL_CONTROLLER_BUTTON_A));
         // The right stick's click, which the game's own layout leaves free.
         set_binding(out, GameInput::HudToggle,      0, button_field(SDL_CONTROLLER_BUTTON_RIGHTSTICK));
     }
@@ -393,6 +443,16 @@ namespace oot::input {
         if (!file) {
             return result;   // a missing file is the defaults, and not an error
         }
+        // Which inputs the file names, per device, for settle_new_defaults.
+        Seen keyboard_seen{};
+        std::vector<std::pair<std::string, Seen>> profile_seen;
+        const auto seen_for = [&](const std::string& guid) -> Seen& {
+            for (auto& [g, s] : profile_seen) {
+                if (g == guid) return s;
+            }
+            profile_seen.push_back({ guid, Seen{} });
+            return profile_seen.back().second;
+        };
 
         std::string line;
         while (std::getline(file, line)) {
@@ -409,6 +469,7 @@ namespace oot::input {
                     Field f;
                     field_from_string(value, f);   // garbage reads as none, on purpose
                     set_binding(result.keyboard, input, slot, f);
+                    keyboard_seen[static_cast<size_t>(input)] = true;
                 }
                 continue;
             }
@@ -430,6 +491,7 @@ namespace oot::input {
                         Field f;
                         field_from_string(value, f);
                         set_binding(profile.bindings, input, slot, f);
+                        seen_for(guid)[static_cast<size_t>(input)] = true;
                     }
                 }
                 continue;
@@ -437,19 +499,39 @@ namespace oot::input {
             // An unknown key is ignored on purpose, as the settings file's are.
         }
 
-        // A PROFILE FROM BEFORE THE FREE CAMERA (upgrades phase 79) gets the two buttons the
-        // standard layout now gives C down and C left, in their EMPTY second slots only, and
-        // only where the first slot is still the right stick direction the layout put there:
-        // a person who rebound either row keeps exactly what they chose.
+        settle_new_defaults(result.keyboard, keyboard_seen);
         for (Profile& profile : result.profiles) {
-            auto give = [&](GameInput input, const Field& expected_first, const Field& second) {
-                std::array<Field, BINDINGS_PER_INPUT>& slots = profile.bindings[static_cast<size_t>(input)];
-                if ((slots[1].kind == FieldKind::None) && (slots[0] == expected_first)) {
-                    slots[1] = second;
+            const Seen seen = seen_for(profile.guid);
+            settle_new_defaults(profile.bindings, seen);
+            const auto slots = [&](GameInput input) -> const std::array<Field, BINDINGS_PER_INPUT>& {
+                return profile.bindings[static_cast<size_t>(input)];
+            };
+            // A default given to a row the file already names, in an empty slot only, and only
+            // where nothing read in the same place has that button.
+            const auto give = [&](GameInput input, int slot, const Field& field) {
+                Field& f = profile.bindings[static_cast<size_t>(input)][static_cast<size_t>(slot)];
+                if (f.kind == FieldKind::None && !clashes(profile.bindings, input, field)) {
+                    f = field;
                 }
             };
-            give(GameInput::CDown, axis_field(SDL_CONTROLLER_AXIS_RIGHTY, true), axis_field(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true));
-            give(GameInput::CLeft, axis_field(SDL_CONTROLLER_AXIS_RIGHTX, false), button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+            // A PROFILE FROM BEFORE THE FREE CAMERA (upgrades phase 79) gets the two buttons the
+            // standard layout now gives C down and C left, in their second slots, only where the
+            // first slot is still the right stick direction the layout put there: a person who
+            // rebound either row keeps exactly what they chose.
+            if (slots(GameInput::CDown)[0] == axis_field(SDL_CONTROLLER_AXIS_RIGHTY, true)) {
+                give(GameInput::CDown, 1, axis_field(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true));
+            }
+            if (slots(GameInput::CLeft)[0] == axis_field(SDL_CONTROLLER_AXIS_RIGHTX, false)) {
+                give(GameInput::CLeft, 1, button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+            }
+            // A PROFILE FROM BEFORE THE PICTURE CONTROL (2026-10-13; it has no photo_shot line)
+            // saved photo mode with no pad button, which was then the default; it gets the left
+            // stick's press when that row is still empty.
+            if (!seen[static_cast<size_t>(GameInput::PhotoShot)] &&
+                slots(GameInput::PhotoMode)[0].kind == FieldKind::None &&
+                slots(GameInput::PhotoMode)[1].kind == FieldKind::None) {
+                give(GameInput::PhotoMode, 0, button_field(SDL_CONTROLLER_BUTTON_LEFTSTICK));
+            }
         }
         return result;
     }
@@ -583,6 +665,10 @@ namespace oot::input {
         InputBindings cdefaults;
         controller_defaults(cdefaults);
         if (pb(GameInput::Start, 0) != cdefaults[static_cast<size_t>(GameInput::Start)][0]) return fail("profile default missing");
+        // A file from before the picture control: its new defaults land where nothing clashes.
+        if (kb(GameInput::PhotoShot, 0) != key_field(SDL_SCANCODE_SPACE)) return fail("a new keyboard default was not given");
+        if (pb(GameInput::PhotoShot, 0) != button_field(SDL_CONTROLLER_BUTTON_A)) return fail("a new pad default was not given");
+        if (pb(GameInput::PhotoMode, 0) != button_field(SDL_CONTROLLER_BUTTON_LEFTSTICK)) return fail("photo mode's pad default was not given");
 
         // The round trip: what is saved is what is loaded.
         if (!save(temp_path, loaded)) return fail("save failed");
@@ -604,6 +690,34 @@ namespace oot::input {
                      (f.kind == FieldKind::JoystickHat && back.hat != HatDirection::Down)) {
                 return fail("a field kind did not round trip");
             }
+        }
+
+        // A new default never takes a key or button the person uses where the new one is read,
+        // and does take one used only somewhere else.
+        {
+            std::ofstream file(temp_path, std::ios::trunc);
+            file << "keyboard.photo_reset.0 = key:" << static_cast<int>(SDL_SCANCODE_SPACE) << "\n"
+                 << "profile.0300abcd.photo_mode.0 = none\n"
+                 << "profile.0300abcd.photo_mode.1 = none\n"
+                 << "profile.0300abcd.photo_hud.0 = button:" << static_cast<int>(SDL_CONTROLLER_BUTTON_A) << "\n"
+                 << "profile.0300abcd.menu.1 = button:" << static_cast<int>(SDL_CONTROLLER_BUTTON_LEFTSTICK) << "\n"
+                 << "profile.0300efab.a.0 = button:" << static_cast<int>(SDL_CONTROLLER_BUTTON_A) << "\n"
+                 << "profile.0300efab.photo_mode.0 = none\n"
+                 << "profile.0300efab.photo_mode.1 = none\n";
+        }
+        const Bindings clash = load(temp_path);
+        const auto first = [](const InputBindings& b, GameInput input) -> const Field& {
+            return b[static_cast<size_t>(input)][0];
+        };
+        if (first(clash.keyboard, GameInput::PhotoShot).kind != FieldKind::None) return fail("a new default took a key in use");
+        if (clash.profiles.size() != 2) return fail("the clash profiles were not read");
+        if (first(clash.profiles[0].bindings, GameInput::PhotoShot).kind != FieldKind::None) return fail("a new default took a button in use");
+        if (first(clash.profiles[0].bindings, GameInput::PhotoMode).kind != FieldKind::None) return fail("photo mode took the menu's button");
+        if (first(clash.profiles[1].bindings, GameInput::PhotoMode) != button_field(SDL_CONTROLLER_BUTTON_LEFTSTICK)) {
+            return fail("photo mode was not given a free button");
+        }
+        if (first(clash.profiles[1].bindings, GameInput::PhotoShot) != button_field(SDL_CONTROLLER_BUTTON_A)) {
+            return fail("the game's A, read only in play, kept the picture from its button");
         }
 
         // A missing file is the defaults.

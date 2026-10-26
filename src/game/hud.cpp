@@ -9,6 +9,8 @@
 
 #include "game/moments.h"
 #include "game/render.h"
+#include "main/photo.h"
+#include "main/shots.h"
 #include "ui/ui_settings.h"
 
 namespace oot::hud {
@@ -60,6 +62,7 @@ namespace oot::hud {
             bits |= (s.hud_wake_health != 0) ? HealthMagic : 0u;
             bits |= (s.hud_wake_items != 0) ? RupeesItems : 0u;
             bits |= (s.hud_wake_pause != 0) ? Paused : 0u;
+            bits |= (s.hud_wake_map != 0) ? MapToggled : 0u;
             bits |= (s.hud_wake_any != 0) ? AnyButton : 0u;
             return bits;
         }
@@ -87,6 +90,20 @@ namespace oot::hud {
 
         const int mode = step(s.hud_fade, 4);
         const bool pressed = g_button_pressed.exchange(false, std::memory_order_relaxed);
+
+        // PHOTO MODE OWNS THE HUD (the user, 2026-10-13: "my photo mode hud is being attached to the same
+        // inactivity timer to hide as the in-game hud so its disappearing after i enable it", then its own
+        // three states). A frozen game makes no activity, so the idle delay ran out and faded the HUD photo
+        // mode had just shown. While photo mode is on, this fading stands aside: photo mode's own state
+        // decides (part() below, photo.cpp), and the idle clock starts again from leaving it.
+        if (oot::shots::photo()) {
+            g_last_active = now;
+            for (int p = 0; p < PartCount; ++p) {
+                g_opacity[p] = 1.0f;
+                g_color[p] = 1.0f;
+            }
+            return;
+        }
         if (pressed) {
             if (mode == WhenIdle) {
                 g_last_active = now;   // a look at it, then the delay again
@@ -172,9 +189,18 @@ namespace oot::hud {
         return static_cast<uint32_t>(std::lround(oot::renderer::frame_aspect() / (4.0 / 3.0) * 65536.0));
     }
 
+    uint32_t targeting() {
+        const oot::ui::Settings& s = oot::ui::settings();
+        return (s.hud_reticle != 0 ? 1u : 0u) | (s.hud_marker != 0 ? 2u : 0u);
+    }
+
     uint32_t part(int p) {
         if (p < 0 || p >= PartCount) {
             return 256u | (256u << 16);
+        }
+        // In photo mode, photo mode's own HUD: full, or dimmed to its row (photo.h); never this fading.
+        if (oot::shots::photo()) {
+            return oot::photo::hud_opacity() | (256u << 16);
         }
         std::lock_guard<std::mutex> lock(g_mutex);
         const uint32_t opacity = static_cast<uint32_t>(std::lround(std::clamp(g_opacity[p], 0.0f, 1.0f) * 256.0f));

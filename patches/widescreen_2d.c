@@ -14,7 +14,7 @@
 // widened projection shows more of the same radial pattern, so it covers the wide frame as the
 // game draws it (the survey has the numbers).
 //
-// The circle draws a textured mesh through a perspective projection and the triforce through
+// The circle draws a textured mesh through a perspective projection and the stacked triangles through
 // an orthographic one, each scaled to just cover the 4:3 view. With the view set to expand, the
 // renderer widens every projection by the frame's aspect, so a mesh that covered the console's
 // frame covers only the middle of the wide one and the scene shows at the sides through the
@@ -91,7 +91,8 @@ RECOMP_PATCH void TransitionCircle_Draw(void* thisx, Gfx** gfxP) {
     *gfxP = gfx;
 }
 
-// @recomp Patched to scale the triforce by the frame's width over 4:3.
+// @recomp Patched to scale the stacked triangles by the frame's width over 4:3. (The function and
+// its data keep the decompilation's names, which the patch must use to replace them.)
 RECOMP_PATCH void TransitionTriforce_Draw(void* thisx, Gfx** gfxP) {
     Gfx* gfx = *gfxP;
     Mtx* modelView;

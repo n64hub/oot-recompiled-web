@@ -107,9 +107,39 @@ namespace oot::moments {
         return slot <= AUTOSAVE_SLOT;
     }
 
-    constexpr bool slot_exists(int slot) {
-        return (slot >= AUTOSAVE_OLDEST) && (slot <= SLOT_COUNT);
+    // RESERVED MOMENTS (the user, 2026-10-13: "a mark as reserved ... a user can have up to ... 20
+    // reserved saves which will never be overwritten by a rolling save or by an auto save they
+    // basically moves them into a separate spot where they are a reserved save that can be reserved
+    // until that user chooses to remove them ... once the reserves are full it won't let them
+    // reserve anymore until they remove an old one"). Twenty slots of their own, numbered from 101
+    // so no step through the others can reach them, in "r1" to "r20" under saves\moments\reserved\.
+    // NOTHING WRITES ONE BUT THE MOVE INTO IT: quick save fills and rolls 1 to 8 only, the autosave
+    // rotates 0 to -4 only, and request_capture refuses a reserved slot.
+    constexpr int RESERVED_FIRST = 101;
+    constexpr int RESERVED_COUNT = 20;
+    constexpr int RESERVED_LAST = RESERVED_FIRST + RESERVED_COUNT - 1;
+
+    constexpr bool is_reserved(int slot) {
+        return (slot >= RESERVED_FIRST) && (slot <= RESERVED_LAST);
     }
+
+    constexpr bool slot_exists(int slot) {
+        return ((slot >= AUTOSAVE_OLDEST) && (slot <= SLOT_COUNT)) || is_reserved(slot);
+    }
+
+    // NOT A SLOT. -1 is one (the autosave one back), so "nothing" is this instead: a staged load of
+    // an older autosave used to read as nothing staged, and never happened.
+    constexpr int NO_SLOT = -1000;
+
+    // Every slot as one run from 0, for a table kept per slot: the autosaves, yours, the reserved.
+    constexpr int SLOT_TOTAL = (SLOT_COUNT - AUTOSAVE_OLDEST + 1) + RESERVED_COUNT;
+    constexpr int slot_index(int slot) {
+        return is_reserved(slot) ? (SLOT_COUNT - AUTOSAVE_OLDEST + 1) + (slot - RESERVED_FIRST)
+             : slot_exists(slot) ? (slot - AUTOSAVE_OLDEST)
+             : -1;
+    }
+    static_assert(slot_index(AUTOSAVE_OLDEST) == 0 && slot_index(SLOT_COUNT) + 1 == slot_index(RESERVED_FIRST) &&
+                  slot_index(RESERVED_LAST) == SLOT_TOTAL - 1 && slot_index(0) >= 0, "one run, no gaps");
 
     // The file a slot's moment, or its thumbnail, lives in: ".moment", ".rgba" or ".png" after the
     // slot's name. THE ONE PLACE THE NAMES ARE DECIDED. The Moments document once built them
@@ -154,6 +184,25 @@ namespace oot::moments {
     // For the patch, through the export: the blocks as read out of RDRAM, one 32 bit word each.
     void on_captured(int slot, const std::vector<uint32_t>& save_words,
                      const std::vector<uint32_t>& context_words, const Place& place);
+
+    // ---- reserving (2026-10-13) -------------------------------------------------------------------
+
+    // A move of a moment, its thumbnails with it, into a slot that holds nothing.
+    enum class Move { Done, NoRoom, NothingThere, Failed };
+
+    // Into the first free reserved slot; `to` is the slot it went to. NoRoom when all twenty hold one.
+    Move reserve(int slot, int& to);
+
+    // Out of the reserved, into the first empty of your eight; NoRoom when all eight hold one.
+    Move unreserve(int slot, int& to);
+
+    // How many reserved slots hold a moment.
+    int reserved_count();
+
+    // `--moments-selftest`: the slot table and the moves into and out of the reserved, run on
+    // placeholder files in a scratch folder under the system's temporary folder, never in a real
+    // moments folder. 0 when every check holds.
+    int selftest();
 
     // ---- the quick keys and the autosave (phases 77 and 78) -------------------------------------
 
@@ -205,7 +254,8 @@ namespace oot::moments {
     // reason logged as MOMENT_REFUSED, when the file is missing or damaged; the game is untouched.
     bool request_load(int slot);
 
-    // For the patch, once a frame: the slot staged for a resume, or -1. Held outside play.
+    // For the patch, once a frame: a ticket for the resume staged (its slot_index, never negative,
+    // because the patch takes "0 or more" as "staged" and slots run negative), or -1. Held outside play.
     int take_pending_load();
 
     // For the export: hand over the staged words and place, once. False when nothing is staged.

@@ -9,6 +9,7 @@
 // Each one takes (rdram, ctx) because that is what a recompiled function looks like, and unpacks
 // its arguments from the MIPS calling convention with librecomp's helpers.
 
+#include "ui_tokens.h"
 #include "recomp.h"
 #include "librecomp/helpers.hpp"
 #include "librecomp/overlays.hpp"
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "game/actor_registry.h"
+#include "game/actor_room.h"
 #include "game/camera_cuts.h"
 #include "game/dl_check.h"
 #include "game/game_state.h"
@@ -29,6 +31,7 @@
 #include "game/light_list.h"
 #include "game/moments.h"
 #include "game/room_pieces.h"
+#include "ui/sound/game_queue.h"
 #include "game/rt_state.h"
 #include "main/boot.h"
 #include "main/input.h"
@@ -166,7 +169,7 @@ extern "C" void recomp_wide_frame_scale_q16(uint8_t* rdram, recomp_context* ctx)
 }
 
 // The transition the harness warp uses: the game's own fade to black unless the run asked for
-// another with --transition, which is how the wipe, the circle and the triforce are reached on
+// another with --transition, which is how the wipe, the circle and the triangles are reached on
 // demand rather than by walking to the one door in the game that uses each.
 // Whether the room on screen is one the game draws as a fixed camera over a background picture
 // (patches/prerender_aspect.c decides; ui_settings.h says what it does about it). One integer in,
@@ -269,11 +272,11 @@ extern "C" void recomp_traced_light_effects(uint8_t* rdram, recomp_context* ctx)
     _return<int32_t>(ctx, oot::rt_state::light_effects_traced() ? 1 : 0);
 }
 
-// The game's painted rays through the Temple of Time's side windows, left out while the windows'
-// traced shafts stand in for them (2026-10-09, patches/window_rays.c).
-extern "C" void recomp_window_rays_hidden(uint8_t* rdram, recomp_context* ctx) {
-    (void)rdram;
-    _return<int32_t>(ctx, oot::rt_state::window_rays_hidden() ? 1 : 0);
+// How full the scene is and where the Sun's Song stands, once per update, for the log
+// (game/actor_room.h, patches/actor_note.c).
+extern "C" void recomp_note_actors(uint8_t* rdram, recomp_context* ctx) {
+    oot::actor_room::note(_arg<0, int32_t>(rdram, ctx), _arg<1, int32_t>(rdram, ctx), _arg<2, int32_t>(rdram, ctx),
+                          _arg<3, int32_t>(rdram, ctx), _arg<4, int32_t>(rdram, ctx));
 }
 
 // Photo mode (2026-10-09, main/photo.h): 1 while it holds the game, for its camera
@@ -281,6 +284,33 @@ extern "C" void recomp_window_rays_hidden(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void recomp_photo_mode(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
     _return<int32_t>(ctx, oot::shots::photo() ? 1 : 0);
+}
+
+// The menu holds the game (the menus plan, phase 97): 1 while a menu is open in the game, for the
+// music's lowered level (patches/menu_music.c). The hold itself is the freeze recomp_harness_frozen
+// already answers (main/shots.h, menu_hold).
+extern "C" void recomp_menu_hold(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    _return<int32_t>(ctx, oot::shots::menu_hold() ? 1 : 0);
+}
+
+// The music players' fade scale while a menu holds the game, in thousandths (patches/menu_music.c).
+// The level is the token's (--menu-music-level, 20, the user's "20%"); the game's audio SQUARES a
+// player's volume on its way to the notes, so a scale of 0.2 measured 4% of the sound, not 20%
+// (the harness's probe, 2026-10-13: a mean level of about 900 fell to about 40). The scale is the
+// square root of the level, so the music plays at a fifth of what it was.
+extern "C" void recomp_menu_music_level(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const double level = oot::ui::tokens::menu_music_level / 100.0;
+    _return<int32_t>(ctx, static_cast<int32_t>(std::lround(std::sqrt(level) * 1000.0)));
+}
+
+// The game's own system sounds for the program's menus (the menus plan, phase 112;
+// patches/menu_sounds.c): the next cue the menus queued and its volume, or -1. Calling it is also
+// how the program knows the game is taking cues (ui/sound/game_queue.h).
+extern "C" void recomp_menu_sound_next(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    _return<int32_t>(ctx, oot::ui::sound::game::take_for_game());
 }
 
 // Photo mode's camera from its own bindings, one axis or the put back press a call (main/photo.h).
@@ -310,6 +340,12 @@ extern "C" void recomp_hud_place(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void recomp_hud_frame_q16(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
     _return<uint32_t>(ctx, oot::hud::frame_q16());
+}
+
+// Which targeting arrows are hidden (game/hud.h, targeting).
+extern "C" void recomp_hud_targeting(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    _return<uint32_t>(ctx, oot::hud::targeting());
 }
 
 // Whether photo mode has the game's HUD hidden (main/photo.h).

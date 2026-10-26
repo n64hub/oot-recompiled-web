@@ -6,7 +6,7 @@
 // transforms, and nothing would crash: the picture would simply be wrong in a way that is hard to
 // trace. The layout is written down here so that collision cannot happen by construction.
 //
-// Laid out fresh for Ocarina of Time. The reference project's numbers are a different game's; the
+// Laid out fresh for this game. The reference project's numbers are a different game's; the
 // SHAPE (fixed IDs low, ranges above, actors in a large block of their own) is what is borrowed.
 // Every constant names the phase that consumes it, so an unused one is visible.
 

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <deque>
@@ -50,7 +52,7 @@ namespace oot::launch {
         std::filesystem::path g_rom_path;
 
         struct Request {
-            enum class Kind { SelectRom, PickRom, Play, Quit, Minimize, Maximize, Rows, KeepRom } kind = Kind::Play;
+            enum class Kind { SelectRom, PickRom, Play, Quit, Minimize, Maximize, Rows, KeepRom, Show, MaximizeLauncher } kind = Kind::Play;
             std::filesystem::path path;
             // Rows: how many list rows the document that is opening needs the window to hold.
             int rows = 0;
@@ -58,13 +60,34 @@ namespace oot::launch {
         std::deque<Request> g_requests;
         std::atomic<bool> g_started{ false };
 
+        // The window held hidden until the splash has drawn (hold_window_hidden), and when.
+        std::atomic<bool> g_window_held{ false };
+        std::atomic<bool> g_window_shown{ false };
+        std::chrono::steady_clock::time_point g_held_since{};
+        constexpr double SHOW_ANYWAY_SECONDS = 4.0;
+
         // The window, and its two shapes. The launcher's size fits the case with its eleven
         // rows and the browser's list; the game's is the size the project has always opened
         // at (four times the console's lines, at its ratio), and the settings take it from
         // there (fullscreen at the desktop's mode when they say so).
         SDL_Window* g_window = nullptr;
         bool g_launcher_shape = false;
-        constexpr int LAUNCHER_WIDTH = 660;
+
+        void show_now(const char* why) {
+            if (g_window != nullptr && !g_window_shown.load()) {
+                // Shown at the launcher's own size, centered on the screen, for the splash; it is
+                // maximized when the launcher takes over (request_maximize_launcher).
+                SDL_ShowWindow(g_window);
+                g_window_shown.store(true);
+                std::fprintf(stderr, "[launch] window shown, %s, %.2f s after it was held\n", why,
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - g_held_since).count());
+            }
+        }
+
+        // THE ONE MENU'S WINDOW (the menus plan, phase 96): the launcher is the shell in its own window,
+        // as the design decision draws it, 960 by 620 (tokens.rcss, --launcher-width and -height).
+        constexpr int LAUNCHER_WIDTH = 960;
+        constexpr int LAUNCHER_HEIGHT = 620;
         // Thirteen rows since the frame rate counter's row (2026-09-19), and the foot's second
         // line: taller than the 540 the launcher began with.
         // THE HEIGHT FOLLOWS THE ROW COUNT, because a fixed one silently clips. It was 580 for
@@ -77,7 +100,6 @@ namespace oot::launch {
         // padding; the rest is rows. Measured from the shipped layout rather than derived from
         // the stylesheet, because the stylesheet is in dp and this is in pixels, and a wrong
         // conversion here is a window that clips again.
-        constexpr int LAUNCHER_ROW_H = 34;
         // One foot row now, not two (the user, 2026-09-20), so the chrome lost a line.
         constexpr int LAUNCHER_CHROME_H = 178;
         // THE WINDOW NEVER OUTGROWS THE SCREEN (2026-09-24, the user: "launcher ... Now too
@@ -97,12 +119,6 @@ namespace oot::launch {
             return (most > LAUNCHER_CHROME_H && height > most) ? most : height;
         }
 
-        int launcher_height() {
-            // The ROM row, every setting, Controls, and Your files. Play and Quit are not counted:
-            // they live in the action bar below the list, which the chrome height already covers.
-            const int rows = 3 + oot::ui::row_count();
-            return fit_to_display(LAUNCHER_CHROME_H + rows * LAUNCHER_ROW_H);
-        }
         constexpr int GAME_WIDTH = 960;
         constexpr int GAME_HEIGHT = 720;
 
@@ -128,14 +144,52 @@ namespace oot::launch {
         // window bar"), so this is the game bar's number below. Left at 36 it would reserve a
         // hundred and eight pixels for seventy two of buttons, and the empty strip to their left
         // would refuse to drag the window for no reason a person could see.
-        constexpr int CHROME_HEIGHT = 60;
-        constexpr int CHROME_BUTTONS = 3 * 24;
+        constexpr int CHROME_HEIGHT = 112;   // the shell's head in the launcher (tokens.rcss, --mast-height)
+        constexpr int CHROME_BUTTONS = 3 * 44;   // --window-btn-width
+
+        // THE LAUNCHER'S SCALE (the Interface size row, the menus plan, phase 113): its window, its
+        // draggable head and its buttons all grow with it, and the shell draws at it. Set on the
+        // main thread whenever the launcher is shaped; read by the hit test and the shell.
+        std::atomic<float> g_launcher_scale{ 1.0f };
+        // The display the window is on (display_size), kept current by tick().
+        std::atomic<int> g_display_w{ 1920 };
+        std::atomic<int> g_display_h{ 1080 };
+
+        // The launcher's scale: the row's, Automatic following the screen the window is on
+        // (oot::ui::launcher_scale), made smaller when the display's working area cannot hold the
+        // launcher's window at it, but never below the row's smallest step (it was never below
+        // 100%, which is why 75% and 90% looked the same as 100%). Stored for the shell and the
+        // hit test.
+        float update_launcher_scale() {
+            const int display = (g_window != nullptr) ? std::max(0, SDL_GetWindowDisplayIndex(g_window)) : 0;
+            SDL_Rect bounds{};
+            SDL_Rect usable{};
+            const bool known = SDL_GetDisplayBounds(display, &bounds) == 0 && bounds.h > 0 &&
+                               SDL_GetDisplayUsableBounds(display, &usable) == 0 && usable.h > 0;
+            float scale = oot::ui::launcher_scale(oot::ui::settings().interface_size, known ? bounds.w : 1920,
+                                                  known ? bounds.h : 1080);
+            if (known) {
+                const float room_w = static_cast<float>(usable.w - 48) / static_cast<float>(LAUNCHER_WIDTH);
+                const float room_h = static_cast<float>(usable.h - 48) / static_cast<float>(LAUNCHER_HEIGHT);
+                scale = std::max(oot::ui::smallest_interface_scale(), std::min(scale, std::min(room_w, room_h)));
+            }
+            g_launcher_scale.store(scale);
+            return scale;
+        }
+
+        // The launcher's window at that scale.
+        void launcher_size(int& width, int& height) {
+            const float scale = update_launcher_scale();
+            width = static_cast<int>(std::lround(LAUNCHER_WIDTH * scale));
+            height = fit_to_display(static_cast<int>(std::lround(LAUNCHER_HEIGHT * scale)));
+        }
 
         SDL_HitTestResult hit_test(SDL_Window* window, const SDL_Point* area, void*) {
             int width = 0;
             int height = 0;
             SDL_GetWindowSize(window, &width, &height);
-            if (area->y < CHROME_HEIGHT && area->x < width - CHROME_BUTTONS) {
+            const float scale = g_launcher_scale.load();
+            if (area->y < CHROME_HEIGHT * scale && area->x < width - CHROME_BUTTONS * scale) {
                 return SDL_HITTEST_DRAGGABLE;
             }
             return SDL_HITTEST_NORMAL;
@@ -534,6 +588,29 @@ namespace oot::launch {
         g_requests.push_back(Request{ Request::Kind::Maximize, std::filesystem::path() });
     }
 
+    void hold_window_hidden() {
+        g_held_since = std::chrono::steady_clock::now();
+        g_window_shown.store(false);
+        g_window_held.store(true);
+    }
+
+    void request_maximize_launcher() {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_requests.push_back(Request{ Request::Kind::MaximizeLauncher, std::filesystem::path() });
+    }
+
+    void request_show_window() {
+        if (!g_window_held.load() || g_window_shown.load()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_requests.push_back(Request{ Request::Kind::Show, std::filesystem::path() });
+    }
+
+    bool window_shown() {
+        return !g_window_held.load() || g_window_shown.load();
+    }
+
     // The launcher's window is sized to its list, and the documents that share that window have
     // lists of different lengths, so the window follows whichever is up rather than being sized
     // once for the longest. Posted by the shell as a screen opens; done on the main thread here,
@@ -541,6 +618,10 @@ namespace oot::launch {
     void request_keep_rom_copy() {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_requests.push_back(Request{ Request::Kind::KeepRom, std::filesystem::path() });
+    }
+
+    float launcher_scale_now() {
+        return g_launcher_scale.load();
     }
 
     int launcher_chrome_height() {
@@ -571,12 +652,15 @@ namespace oot::launch {
         return;
 #endif
         SDL_SetWindowBordered(g_window, SDL_FALSE);
-        const int height = launcher_height();
-        SDL_SetWindowSize(g_window, LAUNCHER_WIDTH, height);
+        int width = 0;
+        int height = 0;
+        launcher_size(width, height);
+        SDL_SetWindowSize(g_window, width, height);
         SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         SDL_SetWindowHitTest(g_window, hit_test, nullptr);
         g_launcher_shape = true;
-        std::fprintf(stderr, "[launch] window shaped for the launcher, %d by %d\n", LAUNCHER_WIDTH, height);
+        std::fprintf(stderr, "[launch] window shaped for the launcher, %d by %d at %.0f%%\n", width, height,
+                     g_launcher_scale.load() * 100.0f);
     }
 
     void shape_for_game() {
@@ -592,6 +676,12 @@ namespace oot::launch {
         SDL_SetWindowBordered(g_window, SDL_FALSE);
         SDL_SetWindowHitTest(g_window, game_hit_test, nullptr);
         if (g_launcher_shape) {
+            // Out of the launcher's maximized state first: a size given to a window Windows still
+            // holds maximized leaves it off its corner at the wrong size (the Play page's fault of
+            // 2026-10-13). The settings' own window mode is applied after this.
+            if ((SDL_GetWindowFlags(g_window) & SDL_WINDOW_MAXIMIZED) != 0) {
+                SDL_RestoreWindow(g_window);
+            }
             SDL_SetWindowSize(g_window, GAME_WIDTH, GAME_HEIGHT);
             SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
             g_launcher_shape = false;
@@ -600,8 +690,25 @@ namespace oot::launch {
         std::fprintf(stderr, "[launch] window shaped for the game, %d by %d\n", GAME_WIDTH, GAME_HEIGHT);
     }
 
+    void display_size(int& width, int& height) {
+        width = g_display_w.load();
+        height = g_display_h.load();
+    }
+
     bool tick() {
+        if (g_window != nullptr) {
+            SDL_Rect bounds{};
+            const int display = SDL_GetWindowDisplayIndex(g_window);
+            if (display >= 0 && SDL_GetDisplayBounds(display, &bounds) == 0 && bounds.w > 0 && bounds.h > 0) {
+                g_display_w.store(bounds.w);
+                g_display_h.store(bounds.h);
+            }
+        }
         bool started_now = false;
+        if (g_window_held.load() && !g_window_shown.load() &&
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - g_held_since).count() > SHOW_ANYWAY_SECONDS) {
+            show_now("nothing drawn yet");
+        }
         std::deque<Request> local;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -672,10 +779,49 @@ namespace oot::launch {
                 case Request::Kind::Rows:
                     // Only while the launcher owns the window's shape. Once the game has it, the
                     // window is the game's size and a document must never take it back.
-                    if (g_window != nullptr && g_launcher_shape && r.rows > 0) {
-                        const int height = fit_to_display(LAUNCHER_CHROME_H + r.rows * LAUNCHER_ROW_H);
-                        SDL_SetWindowSize(g_window, LAUNCHER_WIDTH, height);
-                        SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+                    // NEVER WHILE MAXIMIZED (the user, 2026-10-13: "it also will not properly align a
+                    // maximized play tab", "when maximized, it doesn't attach to top left of the
+                    // screen"). Opening the Play page asks for the launcher's own size, and doing that
+                    // to a maximized window resized and re-centered it while Windows still held it
+                    // maximized, so it sat off the screen's corner at the wrong size. A maximized or
+                    // fullscreen window keeps the size the person gave it.
+                    // THE SCALE EVEN SO (the user, 2026-10-13: "Interface size adjustment is not doing
+                    // anything that I can tell"): the shell draws at the scale set here, and a maximized
+                    // launcher skipped it along with the size, so the row changed nothing there.
+                    if (g_window != nullptr && g_launcher_shape && r.rows > 0 &&
+                        (SDL_GetWindowFlags(g_window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) != 0) {
+                        update_launcher_scale();
+                    }
+                    else if (g_window != nullptr && g_launcher_shape && r.rows > 0) {
+                        int width = 0;
+                        int height = 0;
+                        launcher_size(width, height);
+                        int now_w = 0;
+                        int now_h = 0;
+                        SDL_GetWindowSize(g_window, &now_w, &now_h);
+                        // Only when the size changes (the Interface size row): a page opening
+                        // must not re-center a window the person has moved.
+                        if (now_w != width || now_h != height) {
+                            SDL_SetWindowSize(g_window, width, height);
+                            SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+                        }
+                    }
+                    break;
+
+                case Request::Kind::Show:
+                    show_now("the splash drawn");
+                    break;
+
+                // THE LAUNCHER OPENS MAXIMIZED (the user, 2026-10-13: "we should maximize the launcher
+                // window by default"), once the splash hands over to it: the splash itself shows in
+                // the launcher's own size, centered ("the splash screen could be a lot smaller ... and
+                // then only the launcher itself would be maximized after it loads"). Restoring gives
+                // the launcher's own size back, centered.
+                case Request::Kind::MaximizeLauncher:
+                    if (g_window != nullptr && g_launcher_shape &&
+                        (SDL_GetWindowFlags(g_window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) == 0) {
+                        show_now("the launcher taking over");
+                        SDL_MaximizeWindow(g_window);
                     }
                     break;
 

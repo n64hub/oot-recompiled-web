@@ -6,25 +6,25 @@
 body
 {
 	position: absolute;
-	left: var(--pad);
-	bottom: var(--pad);
+	left: var(--space-4);
+	bottom: var(--space-4);
 	font-family: var(--font-body);
 	font-weight: var(--weight-body);
 	font-size: var(--size-note);
-	color: var(--text);
+	color: var(--color-ink);
 }
 
 .toast
 {
 	display: flex;
 	align-items: center;
-	padding: var(--pad-toast);
+	padding: var(--space-3);
 	max-width: var(--toast-width);
-	border: var(--rule) var(--line);
+	border: var(--rule) var(--color-line);
 	border-radius: var(--radius);
-	decorator: gradient(vertical var(--case-top) var(--case-bottom));
+	decorator: vertical-gradient(var(--color-slate-raised) var(--color-slate));
 	opacity: 1;
-	transition: opacity var(--duration-slow) linear-in-out;
+	transition: opacity var(--duration-slow) var(--ease);
 }
 
 .toast.gone
@@ -36,13 +36,13 @@ body
  * line, as the decision's does. */
 .toast .mark
 {
-	margin-right: var(--pad-toast);
+	margin-right: var(--space-3);
 }
 
 .tx
 {
-	border-left: var(--rule) var(--line);
-	padding-left: var(--pad-toast);
+	border-left: var(--rule) var(--color-line);
+	padding-left: var(--space-3);
 }
 
 /* Two lines, one above the other. RmlUi lays a div out inline unless told otherwise, and the
@@ -58,13 +58,13 @@ body
 	font-family: var(--font-display);
 	font-weight: var(--weight-display);
 	font-size: var(--size-heading);
-	color: var(--text);
+	color: var(--color-ink);
 }
 
 .note
 {
-	font-size: var(--size-caption);
-	color: var(--text-dim);
+	font-size: var(--size-label);
+	color: var(--color-dim);
 }
 
 /* A toast with nothing to add on a second line (a state was saved, a state was restored) is one

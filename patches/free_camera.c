@@ -152,6 +152,183 @@ static s16 sFreeLastMode = -1;
 static s16 sFreeLastSetting = -1;
 static u32 sFreeLastFrame;
 
+// COMING IN, NEVER OVER, AND NEVER A JUMP (the user, 2026-10-12: "when the free camera hits an
+// object while link moves, it jerks upward as if to go over the object it hit rather than staying
+// on same level ... The best way to fix it would be for the angle of the eye itself would need to
+// remain exactly as it is All it needs to do is scooch directly closer to link"; then "NEVER want
+// the camera movement to just be jerky. it must animate to where it needs to be, even if quickly",
+// "must have ramp up and down in animation so its never abrupt feeling", and "even if the animation
+// take only 1 second thats can still be eased in and out").
+//
+// WHERE THE JERK CAME FROM. The ground guard in free_camera_take (2026-09-24) finds the floor under
+// the eye from 80 units above it (Camera_GetFloorY), so the top of a rock, a crate or a step the eye
+// passes over reads as ground. The guard then raised the STICK'S OWN pitch to clear it, in one frame,
+// and left it raised: the view climbed over the thing and stayed looking down on Link. The wall
+// pull-in after it never saw the obstacle, because by then the eye was already above it. And every
+// pull-in and release set the radius outright, so the eye jumped in and jumped back out.
+//
+// WHAT IT DOES NOW, confirmed by the user the same day ("camera work and smoothness was PERFECT"),
+// after trying it as Debugging switches:
+//   - it comes in, not over: only the ground Link stands on (a floor no more than
+//     FREE_CAMERA_GROUND_RISE above his) lifts the angle; anything standing higher brings the eye in
+//     along its own line until it stands clear (camera_clear_radius)
+//   - it keeps its angle: a lift the ground needs belongs to the frame, not to the stick, so the view
+//     goes back to the angle the stick set once the ground allows it; pushing the stick down into
+//     the ground still keeps the angle that hugs it, as before
+//   - it eases: the pull-in, the release and the lift each move on a critically damped spring, which
+//     sets off from rest, speeds up and settles without overshooting, faster coming in than going
+//     back out; the eye's intended place (eyeNext) keeps the full radius, so the game's own distance
+//     easing no longer drags it in and lets it snap back
+// A fourth switch, the game's own camera coming in the same way before the stick is touched, was off
+// in that test and went with the others.
+#define FREE_CAMERA_GROUND_RISE 30.0f   // a floor this far above Link's own is something standing on the ground
+#define FREE_CAMERA_EASE_IN 0.12f       // the spring's time, seconds, coming in off something: settled in about a third of a second
+#define FREE_CAMERA_EASE_OUT 0.35f      // and going back out: about a second
+#define FREE_CAMERA_SHOWN_PITCH_MIN (-0x3C8C)   // Camera_Normal1's own clamp on the eye's pitch
+#define FREE_CAMERA_SHOWN_PITCH_MAX 0x38A4
+
+static f32 sPullIn;       // how far in from the radius asked for the eye is shown, world units
+static f32 sPullInSpeed;
+static f32 sShownR;        // the radius the eye is shown at this frame
+static u32 sPullInFrame;   // the frame the pull-in was last eased on, so a fresh one starts from the eye as it is
+static f32 sLift;          // what the ground adds to the stick's pitch this frame, binary angle units
+static f32 sLiftSpeed;
+
+// A critically damped spring from `current` toward `target`, one game update long.
+static f32 camera_ease(f32 current, f32 target, f32* speed, f32 smoothTime) {
+    f32 dt = (R_UPDATE_RATE > 0) ? ((f32)R_UPDATE_RATE * (1.0f / 60.0f)) : (1.0f / 20.0f);
+    f32 omega = 2.0f / smoothTime;
+    f32 x = omega * dt;
+    f32 decay = 1.0f / (1.0f + x + (0.48f * x * x) + (0.235f * x * x * x));
+    f32 change = current - target;
+    f32 temp = (*speed + (omega * change)) * dt;
+    f32 next = target + ((change + temp) * decay);
+
+    *speed = (*speed - (omega * temp)) * decay;
+    if (((target - current) > 0.0f) == (next > target)) {   // reached or passed: rest on it
+        next = target;
+        *speed = 0.0f;
+    }
+    return next;
+}
+
+// The radius along this yaw and pitch at which the eye stands clear: in front of anything between it
+// and the point it looks at, and above a ledge or an object under it. Never more than `r`. The wall
+// and the ledge below are the solves of 2026-09-24 and 2026-09-30, moved here from free_camera_take
+// (2026-10-12) so they are checked on the eye that results.
+static f32 camera_clear_radius(Camera* camera, s16 yaw, s16 pitch, f32 r) {
+    VecGeo geo;
+    VecGeo hit;
+    Vec3f eye;
+    f32 floorY;
+    s32 step;
+
+    geo.r = r;
+    geo.yaw = yaw;
+    geo.pitch = pitch;
+    eye = Camera_AddVecGeoToVec3f(&camera->at, &geo);
+    if (Camera_BGCheck(camera, &camera->at, &eye)) {
+        hit = OLib_Vec3fDiffToVecGeo(&camera->at, &eye);
+        r = hit.r - FREE_CAMERA_WALL_CLEARANCE;
+        // AND THE ORDINARY MINIMUM MUST NOT APPLY TO A PULL OFF A WALL (the user, 2026-09-30: "this
+        // would honestly simaltaneously prevent the ability to see through walls"). Clamping back UP
+        // to 40 units after stopping at, say, 25 puts the eye through the wall it was just pulled
+        // out of, which is the see-through. So the floor here is only enough to keep the eye out of
+        // his own model.
+        if (r < FREE_CAMERA_MIN_HELD) {
+            r = FREE_CAMERA_MIN_HELD;
+        }
+    }
+
+    // THE LEDGE (the user, 2026-09-30: "if link is on ground floor, and eye is above a ledge floor and
+    // then sinks to be inline with link it fall through the floor rather than scooting along floor and
+    // toward link and then descending the wall"). The floor is checked on the eye that results and
+    // answered the way the wall is: the radius COMES IN, keeping the aim, so the eye travels in over
+    // the ledge rather than through it. A few passes rather than one, because pulling the eye in moves
+    // it horizontally as well as up and the floor under the new point may differ again (a stair, a
+    // stepped terrace); four is enough for anything this game builds and is bounded.
+    for (step = 0; step < 4; step++) {
+        f32 rise;
+        f32 wanted;
+
+        geo.r = r;
+        eye = Camera_AddVecGeoToVec3f(&camera->at, &geo);
+        floorY = Camera_GetFloorY(camera, &eye);
+        if ((floorY == BGCHECK_Y_MIN) || (eye.y >= floorY + FREE_CAMERA_FLOOR_CLEARANCE)) {
+            break;
+        }
+        // sin(pitch) is the line's rise per unit of radius, so the radius that puts the eye a
+        // clearance above this floor is the height difference over that rise.
+        rise = Math_SinS(pitch);
+        if (rise > -0.01f) {
+            // A line level with the point it looks at, or rising to the eye, never climbs out of what
+            // is under it by the formula. Something standing on the ground is left by halving the way
+            // in until the eye stands clear of it; the ground itself is the lift's to answer.
+            f32 inner = FREE_CAMERA_MIN_HELD;
+            f32 outer = r;
+            s32 half;
+
+            if (floorY <= camera->playerGroundY + FREE_CAMERA_GROUND_RISE) {
+                break;
+            }
+            for (half = 0; half < 6; half++) {
+                f32 middle = (inner + outer) * 0.5f;
+                f32 middleFloor;
+
+                geo.r = middle;
+                eye = Camera_AddVecGeoToVec3f(&camera->at, &geo);
+                middleFloor = Camera_GetFloorY(camera, &eye);
+                if ((middleFloor == BGCHECK_Y_MIN) || (eye.y >= middleFloor + FREE_CAMERA_FLOOR_CLEARANCE)) {
+                    inner = middle;
+                } else {
+                    outer = middle;
+                }
+            }
+            r = inner;
+            break;
+        }
+        wanted = (floorY + FREE_CAMERA_FLOOR_CLEARANCE - camera->at.y) / rise;
+        if (wanted < FREE_CAMERA_MIN_HELD) {
+            wanted = FREE_CAMERA_MIN_HELD;
+        }
+        if (wanted >= r) {
+            break;   // already in front of it; nothing to do
+        }
+        r = wanted;
+    }
+    return r;
+}
+
+// The radius the eye is SHOWN at this frame, from the one asked for and the one that stands clear,
+// eased in and back out. `current` is the eye's distance as it stands, for a pull-in that starts
+// this frame.
+static f32 camera_present_radius(Camera* camera, f32 asked, f32 clear, f32 current) {
+    f32 target = (clear < asked) ? (asked - clear) : 0.0f;
+    u32 frame = camera->play->state.frames;
+
+    if (frame != sPullInFrame + 1) {
+        sPullIn = (current < asked) ? (asked - current) : 0.0f;
+        sPullInSpeed = 0.0f;
+    }
+    sPullInFrame = frame;
+
+    sPullIn = camera_ease(sPullIn, target, &sPullInSpeed, (target > sPullIn) ? FREE_CAMERA_EASE_IN : FREE_CAMERA_EASE_OUT);
+    sShownR = asked - sPullIn;
+    if (sShownR < FREE_CAMERA_MIN_HELD) {
+        sShownR = FREE_CAMERA_MIN_HELD;
+    }
+    return sShownR;
+}
+
+// Where the eye is shown: on the line the eye is aimed along, at the radius the pull-in has reached.
+static Vec3f camera_shown_eye(Camera* camera, VecGeo* aimed) {
+    VecGeo shown = *aimed;
+
+    shown.r = sShownR;
+    return Camera_AddVecGeoToVec3f(&camera->at, &shown);
+}
+
+
 // THE CAMERA DISTANCE ROW, AND THE DRIFT ROW, WHERE EVERY PLAYER CAMERA PASSES (the user,
 // 2026-09-24: "we also need to ensure this doesn't only affect free roam distance but affects
 // both free camera and game camera which is the cam it uses after z targeting or if not uing
@@ -235,6 +412,8 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
     s32 holds = ((mode & 1) != 0) && !ocarina && (camera->camId == CAM_ID_MAIN);
     s32 x;
     s32 y;
+    s16 pitchBefore;
+    s16 framePitch;
 
     recomp_free_camera_holds(holds);
     if (!holds) {
@@ -270,7 +449,10 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
             return 0;
         }
         sFreeActive = 1;
+        sLift = 0.0f;
+        sLiftSpeed = 0.0f;
     }
+    pitchBefore = sFreePitch;
 
     if (mode & 2) {
         x = -x;
@@ -297,26 +479,50 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
     // yields instead: where the eye the pitch asks for would be under the floor, the pitch is
     // raised to the one that keeps it a little above, and the eye slides over the ground as the
     // stick turns it.
+    //
+    // ONLY THE GROUND, AND ONLY FOR THE FRAME (2026-10-12, above). A floor standing
+    // higher than Link's own is an object or a ledge, and the eye comes in from it instead (in
+    // camera_clear_radius); and the lift the ground does need is the frame's, eased, so the angle the
+    // stick set comes back when the ground allows it. A stick pushing the eye down into the ground
+    // still makes the ground-hugging angle its own, with the lift taking up the difference so the
+    // picture does not move.
     {
         Vec3f eye;
         f32 floorY;
         VecGeo asked;
+        f32 liftTarget = 0.0f;
+        s32 shownPitch;
 
         asked = *eyeAdjustment;
         asked.yaw = sFreeYaw;
         asked.pitch = sFreePitch;
         eye = Camera_AddVecGeoToVec3f(&camera->at, &asked);
         floorY = Camera_GetFloorY(camera, &eye);
-        if ((floorY != BGCHECK_Y_MIN) && (eye.y < floorY + FREE_CAMERA_FLOOR_CLEARANCE)) {
+        if ((floorY != BGCHECK_Y_MIN) && (eye.y < floorY + FREE_CAMERA_FLOOR_CLEARANCE) &&
+            (floorY <= camera->playerGroundY + FREE_CAMERA_GROUND_RISE)) {
             Vec3f lifted = eye;
             VecGeo over;
 
             lifted.y = floorY + FREE_CAMERA_FLOOR_CLEARANCE;
             over = OLib_Vec3fDiffToVecGeo(&camera->at, &lifted);
             if (sFreePitch < over.pitch) {
-                sFreePitch = over.pitch;
+                if (sFreePitch < pitchBefore) {
+                    sLift += (f32)(sFreePitch - over.pitch);
+                    sFreePitch = over.pitch;
+                } else {
+                    liftTarget = (f32)(over.pitch - sFreePitch);
+                }
             }
         }
+        sLift = camera_ease(sLift, liftTarget, &sLiftSpeed, (liftTarget > sLift) ? FREE_CAMERA_EASE_IN : FREE_CAMERA_EASE_OUT);
+        shownPitch = sFreePitch + (s32)sLift;
+        if (shownPitch > FREE_CAMERA_SHOWN_PITCH_MAX) {
+            shownPitch = FREE_CAMERA_SHOWN_PITCH_MAX;
+        }
+        if (shownPitch < FREE_CAMERA_SHOWN_PITCH_MIN) {
+            shownPitch = FREE_CAMERA_SHOWN_PITCH_MIN;
+        }
+        framePitch = (s16)shownPitch;
     }
 
     // THE DISTANCE, AND THE WALL (2026-09-24). Turning the camera moves the point it looks at,
@@ -330,8 +536,6 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
     {
         VecGeo want;
         VecGeo unit;
-        VecGeo hit;
-        Vec3f eye;
         Vec3f origin;
         Vec3f direction;
         Vec3f toAt;
@@ -356,7 +560,7 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
         wanted = camera->dist;
         unit.r = 1.0f;
         unit.yaw = sFreeYaw;
-        unit.pitch = sFreePitch;
+        unit.pitch = framePitch;
         origin.x = 0.0f;
         origin.y = 0.0f;
         origin.z = 0.0f;
@@ -389,89 +593,19 @@ static s32 free_camera_take(Camera* camera, VecGeo* atEyeNextGeo, VecGeo* eyeAdj
             want.r = FREE_CAMERA_MIN_DISTANCE;
         }
         want.yaw = sFreeYaw;
-        want.pitch = sFreePitch;
-        eye = Camera_AddVecGeoToVec3f(&camera->at, &want);
-        if (Camera_BGCheck(camera, &camera->at, &eye)) {
-            hit = OLib_Vec3fDiffToVecGeo(&camera->at, &eye);
-            want.r = hit.r - FREE_CAMERA_WALL_CLEARANCE;
-            // AND THE ORDINARY MINIMUM MUST NOT APPLY TO A PULL OFF A WALL (the user,
-            // 2026-09-30: "this would honestly simaltaneously prevent the ability to see through
-            // walls"). Clamping back UP to 40 units after stopping at, say, 25 puts the eye
-            // through the wall it was just pulled out of, which is the see-through. In front of
-            // the wall beats standing off Link, and he settled the same tension for the game's
-            // own cameras in the same breath: "these instances would now just be closer to
-            // link". So the floor here is only enough to keep the eye out of his own model.
-            if (want.r < FREE_CAMERA_MIN_HELD) {
-                want.r = FREE_CAMERA_MIN_HELD;
-            }
-        }
+        want.pitch = framePitch;
+
+        // THE WALL AND THE LEDGE (2026-09-24 and 2026-09-30) are camera_clear_radius's now, with
+        // their reasoning beside them, checked on the eye that results rather than on the radius
+        // the game's step left; and the radius that stands clear is eased to, not set (2026-10-12).
+        camera_present_radius(camera, want.r, camera_clear_radius(camera, sFreeYaw, framePitch, want.r), atEyeNextGeo->r);
+        // The eye's intended place keeps the full radius while the pull-in eases, so the game's own
+        // distance, measured from it every frame, is not dragged in and then let snap back out.
         eyeAdjustment->r = want.r;
     }
 
-    // THE LEDGE, AND IT IS THE FLOOR GUARD ABOVE TESTING A POINT THE EYE NEVER OCCUPIES (the user,
-    // 2026-09-30: "if link is on ground floor, and eye is above a ledge floor and then sinks to be
-    // inline with link it fall through the floor rather than scooting along floor and toward link
-    // and then descending the wall").
-    //
-    // That guard runs before the block above and builds its test eye from the radius the GAME's
-    // step happened to leave in eyeAdjustment. The block above then solves the real radius and
-    // overwrites it. On open ground the two points are close enough that sampling the wrong one
-    // costs nothing, which is why it has worked since it was written. On a LEDGE the floor height
-    // changes by its whole height across a small horizontal step, so sampling a point even a
-    // little away from the eye is the difference between finding the ledge and finding the ground
-    // far below it, and the guard then sees nothing in the way.
-    //
-    // So the floor is checked again HERE, on the eye that actually results, and answered the way
-    // he asked for and the way the wall already answers: the radius COMES IN, keeping the aim the
-    // stick set, so the eye travels in over the ledge rather than through it. Once it has come
-    // past the edge the floor under it is the low ground again, this stops applying, and it
-    // descends the face on its own.
-    //
-    // The pitch is deliberately not touched here. Raising it is the answer to a different
-    // question (the ground slide of 2026-09-24) and that guard above still owns it.
-    {
-        Vec3f eye;
-        f32 floorY;
-        VecGeo asked;
-        s32 step;
-
-        asked.yaw = sFreeYaw;
-        asked.pitch = sFreePitch;
-        // A few passes rather than one: pulling the eye in moves it horizontally as well as up,
-        // so the floor under the new point may be different again (a stair, a stepped terrace).
-        // Four is enough for anything this game builds and is bounded, which a while loop is not.
-        for (step = 0; step < 4; step++) {
-            asked.r = eyeAdjustment->r;
-            eye = Camera_AddVecGeoToVec3f(&camera->at, &asked);
-            floorY = Camera_GetFloorY(camera, &eye);
-            if ((floorY == BGCHECK_Y_MIN) || (eye.y >= floorY + FREE_CAMERA_FLOOR_CLEARANCE)) {
-                break;
-            }
-            // How far along the stick's line the eye has to come to stand a clearance above this
-            // floor. sin(pitch) is its rise per unit of radius, so the radius that puts it at the
-            // floor's height is the height difference over that rise. Below a hundredth the line
-            // is level enough that no radius answers, and the ground slide guard has it instead.
-            {
-                f32 rise = Math_SinS(sFreePitch);
-                f32 wanted;
-
-                if (rise > -0.01f) {
-                    break;
-                }
-                wanted = (floorY + FREE_CAMERA_FLOOR_CLEARANCE - camera->at.y) / rise;
-                if (wanted < FREE_CAMERA_MIN_HELD) {
-                    wanted = FREE_CAMERA_MIN_HELD;
-                }
-                if (wanted >= eyeAdjustment->r) {
-                    break;   // already in front of it; nothing to do
-                }
-                eyeAdjustment->r = wanted;
-            }
-        }
-    }
-
     eyeAdjustment->yaw = sFreeYaw;
-    eyeAdjustment->pitch = sFreePitch;
+    eyeAdjustment->pitch = framePitch;
     return 1;
 }
 
@@ -634,7 +768,8 @@ RECOMP_PATCH s32 Camera_Normal3(Camera* camera) {
 
     if (freeHolds) {
         rwData->swing.unk_18 = 0;
-        *eye = *eyeNext;
+        // @recomp The eye at the radius the pull-in has eased to (2026-10-12).
+        *eye = camera_shown_eye(camera, &sp84);
     } else if (camera->status == CAM_STAT_ACTIVE) {
         func_80046E20(camera, &sp84, roData->distMin, roData->yawUpdateSpeed, &sp8C, &rwData->swing);
     } else {
@@ -984,7 +1119,8 @@ RECOMP_PATCH s32 Camera_Normal1(Camera* camera) {
         if (freeHolds) {
             rwData->swing.swingUpdateRate = camera->yawUpdateRateInv = roData->unk_0C * 2.0f;
             rwData->swing.unk_18 = 0;
-            *eye = *eyeNext;
+            // @recomp The eye at the radius the pull-in has eased to (2026-10-12).
+            *eye = camera_shown_eye(camera, &eyeAdjustment);
         } else if (rwData->startSwingTimer > 0) {
             func_80046E20(camera, &eyeAdjustment, roData->distMin, roData->unk_0C, &sp98, &rwData->swing);
         } else {

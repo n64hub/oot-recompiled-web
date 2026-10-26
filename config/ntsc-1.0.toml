@@ -1,4 +1,4 @@
-# Config for the Ocarina of Time NTSC-U 1.0 recompilation.
+# Config for the NTSC-U 1.0 recompilation.
 #
 # Modeled on upstream/Zelda64Recomp/us.rev1.toml for STRUCTURE AND TECHNIQUE ONLY. Every address,
 # every encoded instruction word and every function name below is computed from OUR elf and OUR rom.

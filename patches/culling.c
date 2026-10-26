@@ -51,6 +51,7 @@
 // widening the test alone would read outside it. It is recorded in issues.md as its own job.
 
 #include "patches.h"
+#include "actor_note.h"
 
 #include "actor.h"
 #include "play_state.h"
@@ -111,6 +112,85 @@ static f32 vertical_reach(void) {
 
 static f32 behind_reach(void) {
     return sCasterBehindReach[caster_reach()];
+}
+
+// THE SPAWNERS LEAVE ROOM FOR THE GAME'S OWN ACTORS (2026-10-12). The game refuses to spawn
+// anything once its scene holds more than 200 actors (Actor_Spawn, ACTOR_NUMBER_MAX). The
+// reaches above and the Render distance row make the ring and tree spawners fill Hyrule Field
+// with their shrubs, rocks and trees, out to the fog and all round the camera, where the game
+// kept them within about 1600 units in front of it (z_en_wood02.c's own note: "Presumably done
+// this way to keep memory usage down in Hyrule Field"). Its 73 placed actors, 7 rings of eight
+// to twelve and 27 tree spawners of up to five reach past 200, and then whatever the game spawns
+// in play is refused without a word. The Sun's Song is one such thing: its effect never comes,
+// so the song never ends and Link stands holding his instrument while the clock creeps on at its
+// own pace (the user, 2026-10-12: "it was also removed from sun song animation which has made it
+// not work and instead completelyt freezes the game entirely"; "link just stood there ... as if
+// the animation was still happening but never finished").
+//
+// So a spawner reaches past the game's own reach only while the scene stays at or under
+// SPAWN_ROOM_SPARE actors once it has spawned, and past SPAWN_ROOM_FULL what was spawned beyond
+// the game's reach is given back, so the game always has room to spawn. Built with a second
+// candidate (the spawners at the game's own reach) and a guard on the song as Debugging switches;
+// this one alone was on, and the user confirmed it: "so is sun sung fix!" (2026-10-12).
+#define SPAWN_ROOM_SPARE 170
+#define SPAWN_ROOM_FULL 185
+
+// AND THE MEMORY, NOT ONLY THE COUNT (2026-10-21, patches/actor_heap.c). In the user's Hyrule
+// Field the count stayed under 170 while the actor heap ran out (its largest free block down to
+// 96 bytes), and the arrow and the hookshot's hook were refused for want of memory. The heap is
+// far bigger now (patches/actor_heap.c), and as the net under it a spawner also keeps to the
+// game's own reach while the heap's largest free block is under SPAWN_MEMORY_SPARE, and gives
+// back what it put beyond it under SPAWN_MEMORY_FULL. The spare is room for the largest things
+// the game spawns in play, a horse or an owl and their code. Measured once an update
+// (patches/actor_note.c).
+#define SPAWN_MEMORY_SPARE 0xC000
+#define SPAWN_MEMORY_FULL 0x8000
+
+static s32 memory_short(u32 below) {
+    return ActorNote_LargestFree() < below;
+}
+
+// Whether a spawner wanting `wanted` more actors keeps to the game's own reach this frame.
+static s32 spawner_keeps_to_game(PlayState* play, s32 wanted) {
+    return ((play->actorCtx.total + wanted) > SPAWN_ROOM_SPARE) || memory_short(SPAWN_MEMORY_SPARE);
+}
+
+// Whether what a spawner put beyond the game's own reach is given back this frame.
+static s32 spawner_gives_back(PlayState* play) {
+    return (play->actorCtx.total > SPAWN_ROOM_FULL) || memory_short(SPAWN_MEMORY_FULL);
+}
+
+// How much wider than 4:3 the frame is, with none of the casters' reach.
+static f32 frame_width_scale(void) {
+    return (f32)recomp_wide_frame_scale_q16() * (1.0f / 65536.0f);
+}
+
+// The game's own culling test, but for the frame's width.
+static s32 culling_game_test(Actor* actor, Vec3f* projPos, f32 projW) {
+    f32 invW;
+
+    if ((projPos->z > -actor->cullingVolumeScale) &&
+        (projPos->z < (actor->cullingVolumeDistance + actor->cullingVolumeScale))) {
+        invW = (projW < 1.0f) ? 1.0f : 1.0f / (f32)projW;
+        if ((((fabsf(projPos->x) - actor->cullingVolumeScale) * invW) < frame_width_scale()) &&
+            (((projPos->y + actor->cullingVolumeDownward) * invW) > -1.0f) &&
+            (((projPos->y - actor->cullingVolumeScale) * invW) < 1.0f)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether the player can see the actor: the game's own test at the frame's width, on the position
+// the game projected this frame (Actor_DrawAll). For the actors that read the culling flag to mean
+// "on screen", which the widened test above no longer answers (patches/on_screen.c, 2026-10-21).
+s32 culling_on_screen(Actor* actor) {
+    return culling_game_test(actor, &actor->projectedPos, actor->projectedW);
+}
+
+// A tree a spawner made (z_en_wood02.c: WOOD_SPAWN_SPAWNED).
+static s32 spawned_tree(Actor* actor) {
+    return (actor->id == ACTOR_EN_WOOD02) && (((EnWood02*)actor)->spawnType == 1);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -199,6 +279,12 @@ static f32 render_distance(PlayState* play, f32 asked) {
 RECOMP_PATCH s32 Actor_CullingVolumeTest(PlayState* play, Actor* actor, Vec3f* projPos, f32 projW) {
     f32 invW;
 
+    // @recomp A spawned tree outside the game's own reach goes when the spawners give back
+    // (2026-10-12, above): EnWood02_Update removes a spawned tree that leaves its culling volume.
+    if (spawned_tree(actor) && spawner_gives_back(play)) {
+        return culling_game_test(actor, projPos, projW);
+    }
+
     // @recomp Behind the camera as well while the lighting is traced (its shadow reaches into
     // the frame); the game's own near side otherwise.
     if ((projPos->z > -actor->cullingVolumeScale - behind_reach()) &&
@@ -230,6 +316,16 @@ RECOMP_PATCH s32 EnWood02_SpawnZoneCheck(EnWood02* this, PlayState* play, Vec3f*
     SkinMatrix_Vec3fMtxFMultXYZW(&play->viewProjectionMtxF, pos, &this->actor.projectedPos, &this->actor.projectedW);
 
     phi_f12 = ((this->actor.projectedW == 0.0f) ? 1000.0f : fabsf(1.0f / this->actor.projectedW));
+
+    // @recomp The game's own reach, at the frame's width, while the spawners keep to it
+    // (2026-10-12, "THE SPAWNERS LEAVE ROOM" above). A spawner adds one tree at a time.
+    if (spawner_keeps_to_game(play, 1)) {
+        return (-this->actor.cullingVolumeScale < this->actor.projectedPos.z) &&
+               (this->actor.projectedPos.z < (this->actor.cullingVolumeDistance + this->actor.cullingVolumeScale)) &&
+               (((fabsf(this->actor.projectedPos.x) - this->actor.cullingVolumeScale) * phi_f12) < frame_width_scale()) &&
+               (((this->actor.projectedPos.y + this->actor.cullingVolumeDownward) * phi_f12) > -1.0f) &&
+               (((this->actor.projectedPos.y - this->actor.cullingVolumeScale) * phi_f12) < 1.0f);
+    }
 
     // @recomp Behind the camera as well while the row asks for it: a tree behind the player
     // still throws its shadow forward into the frame, and this test decides whether it exists.
@@ -263,12 +359,18 @@ RECOMP_PATCH s32 EnWood02_SpawnZoneCheck(EnWood02* this, PlayState* play, Vec3f*
 // the spawning distance past the game's own, and only ever raised, so at Original nothing differs.
 // Done as the spawner is created too (Actor_Init, actor_registry_patches.c), because one created
 // beyond its small volume would otherwise never update to raise it.
+//
+// AND IT LEAVES ROOM (2026-10-12, "THE SPAWNERS LEAVE ROOM" above). A ring not yet spawned (it sets
+// ACTOR_FLAG_UPDATE_CULLING_DISABLED as it spawns and clears it as it gives its children back)
+// reaches past the game's own only if its twelve at most still leave room; a spawned ring past the
+// game's own reach gives them back while the scene is full, by its own distance test.
 void culling_mure2_reach(Actor* thisx, PlayState* play) {
     ObjMure2* this = (ObjMure2*)thisx;
     f32 own = (play->csCtx.state == CS_STATE_IDLE) ? 1600.0f : 3200.0f;
     f32 reach = render_distance(play, own) / 1600.0f;
+    s32 spawned = (this->actor.flags & ACTOR_FLAG_UPDATE_CULLING_DISABLED) != 0;
 
-    this->unk_184 = reach * reach;
+    // Awake out to the far reach either way, so a ring kept back now can still spawn once there is room.
     if (reach * 1600.0f > own) {
         f32 needed = (reach * 1600.0f) - this->actor.cullingVolumeScale;
 
@@ -276,6 +378,11 @@ void culling_mure2_reach(Actor* thisx, PlayState* play) {
             this->actor.cullingVolumeDistance = needed;
         }
     }
+
+    if (spawned ? spawner_gives_back(play) : spawner_keeps_to_game(play, 12)) {
+        reach = own / 1600.0f;
+    }
+    this->unk_184 = reach * reach;
 }
 
 // @recomp Reproduced from the decompilation's z_obj_mure2.c with the distance scaled.

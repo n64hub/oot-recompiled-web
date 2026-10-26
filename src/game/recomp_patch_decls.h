@@ -82,10 +82,13 @@ void recomp_letterbox(uint8_t* rdram, recomp_context* ctx);
 void recomp_traced_light_effects(uint8_t* rdram, recomp_context* ctx);
 // The Debugging menu's Glow test row: how a point light's glow is hidden.
 void recomp_glow_test(uint8_t* rdram, recomp_context* ctx);
-// Whether the windows' traced shafts stand in for the game's painted rays through the side windows.
-void recomp_window_rays_hidden(uint8_t* rdram, recomp_context* ctx);
-// Whether photo mode holds the game.
+// How full the scene is and where the Sun's Song stands, for the log.
+void recomp_note_actors(uint8_t* rdram, recomp_context* ctx);// Whether photo mode holds the game.
 void recomp_photo_mode(uint8_t* rdram, recomp_context* ctx);
+// Whether a menu holds the game, and the music's level then in percent (the menus plan, 97, 98).
+void recomp_menu_hold(uint8_t* rdram, recomp_context* ctx);
+void recomp_menu_music_level(uint8_t* rdram, recomp_context* ctx);
+void recomp_menu_sound_next(uint8_t* rdram, recomp_context* ctx);
 // Whether the room photo mode froze is drawn over a picture.
 void recomp_photo_picture_room(uint8_t* rdram, recomp_context* ctx);
 // Photo mode's camera from its own bindings.
@@ -100,6 +103,8 @@ void recomp_hud_layout(uint8_t* rdram, recomp_context* ctx);
 // Where the HUD sits when HUD sits is Custom, and the frame its distances are shares of.
 void recomp_hud_place(uint8_t* rdram, recomp_context* ctx);
 void recomp_hud_frame_q16(uint8_t* rdram, recomp_context* ctx);
+// Which targeting arrows are hidden: bit 0 the lock-on arrows, bit 1 the marker over a target.
+void recomp_hud_targeting(uint8_t* rdram, recomp_context* ctx);
 // The table of the actors that moved through the air this update, for the dust they push.
 void recomp_air_movers(uint8_t* rdram, recomp_context* ctx);
 // The painted elements of the rooms where the player is, for the Debugging menu's switches.

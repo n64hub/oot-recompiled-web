@@ -43,6 +43,16 @@ namespace oot::rom {
                                         const recomp::GameEntry& entry,
                                         std::vector<uint8_t>& contents);
 
+    // The same, on bytes already read (the file as it is on disk).
+    recomp::RomValidationError validate_bytes(std::vector<uint8_t> bytes,
+                                              const recomp::GameEntry& entry,
+                                              std::vector<uint8_t>& contents);
+
+    // The check against the user's own ROM, in memory, writing nothing: the ROM as it is is this
+    // game, a byte changed past the header is another revision, a changed header name is another
+    // game, and a file too short for the name is not read past its end. ROM_SELFTEST_OK or 1.
+    int selftest(const std::filesystem::path& rom, const recomp::GameEntry& entry);
+
     // The chosen file's PATH, kept in a one line text file beside the executable, next to
     // settings.txt and controls.txt. A path is a few dozen bytes; the copy it replaces was 32 MB.
     //

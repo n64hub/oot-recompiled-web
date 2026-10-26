@@ -22,6 +22,7 @@ namespace oot::shots {
         std::atomic<bool> g_frozen{ false };
         std::atomic<bool> g_held{ false };
         std::atomic<bool> g_photo{ false };
+        std::atomic<bool> g_menu{ false };
     }
 
     void set_seed(uint32_t seed) {
@@ -50,7 +51,7 @@ namespace oot::shots {
 
     bool frozen() {
         return g_frozen.load(std::memory_order_acquire) || g_held.load(std::memory_order_acquire) ||
-               g_photo.load(std::memory_order_acquire);
+               g_photo.load(std::memory_order_acquire) || g_menu.load(std::memory_order_acquire);
     }
 
     void set_photo(bool on) {
@@ -60,6 +61,16 @@ namespace oot::shots {
 
     bool photo() {
         return g_photo.load(std::memory_order_acquire);
+    }
+
+    void set_menu_hold(bool on) {
+        if (g_menu.exchange(on, std::memory_order_acq_rel) != on) {
+            std::fprintf(stderr, "[shot] %s\n", on ? "held for the menu" : "the menu let go");
+        }
+    }
+
+    bool menu_hold() {
+        return g_menu.load(std::memory_order_acquire);
     }
 
     void set_hold(bool on) {

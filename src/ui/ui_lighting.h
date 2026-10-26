@@ -1,4 +1,4 @@
-// The lighting controls: the model behind the Lighting sub menu (2026-09-24, the user: "a sub
+// The lighting controls: the model behind the Lighting page (2026-09-24, the user: "a sub
 // menu for controls on all ambient occlusion, ray tracing, volumetric lighting, falloff controls
 // and distance", "both to enable and disable, as well as refine and change levels of them",
 // "control the radius", "how far the lights or shadows reach").
@@ -27,7 +27,7 @@ namespace oot::ui::lighting {
     struct Lighting {
         int raytracing = 0;        // Off, On: the master switch
         int shadows = 1;           // Off, On
-        int shadow_softness = 1;   // Sharp, Original, Soft, Softer
+        int shadow_softness = 1;   // Sharp, Original, Soft, Softer, Very soft, Hazy
         // How many rays each lit pixel spends on the sun's disc: 1, 2, 4, 8 (a moving surface
         // takes twice). A soft edge is where the noise lives, and one ray across it is what
         // painted the windmill's turning shadow (the user, 2026-09-24). Two by default.
@@ -153,11 +153,15 @@ namespace oot::ui::lighting {
         int light_stone = 1;
         int glow_test = 0;
         // THE WINDOWS' SHAFTS (2026-10-09, renderer patch 0051): Window shafts (0 off, then Faint
-        // to Bright), Shaft length (Short, Medium, Long, Very long), and the Debugging menu's
-        // Drawn beam (0 hidden as in 0.4.0, 1 the game's painted beam shown again).
+        // to Bright) and Shaft length (Short, Medium, Long, Very long).
         int window_shafts = 0;
         int shaft_length = 1;
-        int drawn_beam = 0;
+        // The Debugging menu's Drawn beam row, and the switches of 2026-10-12 for the beams, the
+        // spawners, the Sun's Song and the free camera, came off the menu once the user confirmed
+        // the fixes ("PERFECT", "same with the light beam fixes", "so is sun sung fix!"): what was on
+        // is now what the program does. A lighting file that still names them is read past. The
+        // same for the switches of 2026-10-21 for the arrow and the hookshot (patches/actor_heap.c),
+        // confirmed the same day ("both of the issues that I brought up have been addressed").
 
         bool operator==(const Lighting& other) const;
         bool operator!=(const Lighting& other) const { return !(*this == other); }

@@ -1,9 +1,22 @@
 # release.ps1: build the share, stage it to R2, and promote it to everyone when you say so.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\release.ps1              # build + stage
-#   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Promote     # make it live
+#   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Promote     # make it live, now
 #   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Status      # what is where
 #   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -NoBuild     # stage what exists
+#   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -SiteData    # stage only the site's data
+#   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -PromoteHere # promote from this machine
+#   powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Approve     # let Friday promote what is staged
+#
+# NOTHING GOES LIVE ON THE SCHEDULE WITHOUT YOUR WORD (2026-10-12: a staged 0.5.2 carried a regression,
+# and the user: "this is why i didn't want to promote yet!"). Friday's run promotes only the staged
+# version named in next/approved, which -Approve writes and every new staging resets to none.
+#
+# PROMOTING HAPPENS IN CI (2026-10-12, the user: "build that promotion and get the site hooked up to
+# use it"). The site repository's .github/workflows/promote.yml promotes every Friday at 9 a.m. in New
+# York, and redeploys the site from the live release straight after. -Promote runs that same workflow
+# now (one way to promote, so the site always follows); -PromoteHere is the copy from this machine for
+# when GitHub cannot be reached, and leaves the site's redeploy to be run by hand.
 #
 # THE TWO CHANNELS, which is the whole point of the scheme and is the same one the other apps
 # here use (the global rules' "Staged Release Channel"):
@@ -23,9 +36,12 @@
 
 param(
     [switch]$Promote,
+    [switch]$PromoteHere,
+    [switch]$Approve,
     [switch]$Status,
     [switch]$NoBuild,
     [switch]$NoSign,
+    [switch]$SiteData,
     # The R2 prefix and the hub's slug for this program. Kept in one place because it appears in
     # every key below and in the hub's apps.json.
     [string]$Slug = "oot-recompiled"
@@ -79,10 +95,80 @@ if ($Status) {
     exit 0
 }
 
+# The approval the Friday promote reads: the staged version, or "none".
+function Set-Approval {
+    param([string]$Value)
+    $dir = Join-Path $root "release\staging"
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $file = Join-Path $dir "approved"
+    Set-Content -Path $file -Value $Value -Encoding ascii -NoNewline
+    $result = Invoke-R2 @("put", "$Slug/next/approved", $file)
+    if ($result.Code -ne 0) {
+        Write-Output "RELEASE_FAIL writing the approval: $($result.Output)"
+        exit 1
+    }
+}
+
+if ($Approve) {
+    $staged = Invoke-R2 @("get", "$Slug/next/latest.yml")
+    if ($staged.Code -ne 0) {
+        Write-Output "RELEASE_FAIL nothing is staged for $Slug"
+        exit 1
+    }
+    $stagedVersion = ((($staged.Output -split "`n") | Where-Object { $_ -match '^version:' }) -replace '^version:\s*', '').Trim()
+    Set-Approval $stagedVersion
+    Write-Output "APPROVED ${stagedVersion}; it goes live at the next Friday promote, 9 a.m. New York (or now with -Promote)"
+    exit 0
+}
+
 if ($Promote) {
+    # THE WORKFLOW, NOT A COPY FROM HERE, so a promote on demand does exactly what Friday's does,
+    # site and all. Run as the personal GitHub account whatever gh has active (the work account
+    # cannot see the site's repository), by handing its token to these calls alone.
+    $workflowRepo = "JonB-Dev/oot-recompiled-site"
+    $token = (& gh auth token --user JonB-Dev 2>$null)
+    if (-not $token) {
+        Write-Output "RELEASE_FAIL gh has no JonB-Dev login; log it in, or promote from here with -PromoteHere"
+        exit 1
+    }
+    $previousToken = $env:GH_TOKEN
+    $env:GH_TOKEN = $token
+    try {
+        Write-Output "=== promoting ${Slug} through $workflowRepo's promote.yml ==="
+        $before = (& gh run list --workflow promote.yml --repo $workflowRepo --limit 1 --json databaseId --jq '.[0].databaseId' 2>$null)
+        & gh workflow run promote.yml --repo $workflowRepo -f promote=true -f deploy=false -f dry_run=false
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "RELEASE_FAIL the workflow would not start; promote from here with -PromoteHere"
+            exit 1
+        }
+        $runId = $null
+        for ($i = 0; ($i -lt 30) -and (-not $runId); $i++) {
+            Start-Sleep -Seconds 2
+            $latestRun = (& gh run list --workflow promote.yml --repo $workflowRepo --limit 1 --json databaseId --jq '.[0].databaseId' 2>$null)
+            if ($latestRun -and ($latestRun -ne $before)) { $runId = $latestRun }
+        }
+        if (-not $runId) {
+            Write-Output "RELEASE_FAIL the workflow started but its run did not appear; see the repository's Actions tab"
+            exit 1
+        }
+        Write-Output "  run $runId, watching it"
+        & gh run watch $runId --repo $workflowRepo --exit-status
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "RELEASE_FAIL the promote run failed: gh run view $runId --repo $workflowRepo --log-failed"
+            exit 1
+        }
+        Write-Output "PROMOTE_OK run $runId finished; tools\release.ps1 -Status says what is live"
+        exit 0
+    }
+    finally {
+        $env:GH_TOKEN = $previousToken
+    }
+}
+
+if ($PromoteHere) {
     # ${Slug} rather than $Slug because a colon straight after a variable name reads as a drive
     # reference in PowerShell, which is a parse error rather than a runtime one.
-    Write-Output "=== promoting ${Slug}: the staged pointer becomes the live one ==="
+    Write-Output "=== promoting ${Slug} from this machine: the staged files become the live ones ==="
     $staged = Invoke-R2 @("get", "$Slug/next/latest.yml")
     if ($staged.Code -ne 0) {
         Write-Output "RELEASE_FAIL nothing is staged for $Slug (run without -Promote first)"
@@ -90,23 +176,79 @@ if ($Promote) {
     }
     $stagedVersion = (($staged.Output -split "`n") | Where-Object { $_ -match '^version:' }) -replace '^version:\s*', ''
     Write-Output "  staged version: $stagedVersion"
-    $copy = Invoke-R2 @("copy", "$Slug/next/latest.yml", "$Slug/latest.yml")
-    if ($copy.Code -ne 0) {
-        Write-Output "RELEASE_FAIL promote: $($copy.Output)"
-        exit 1
-    }
-    Write-Output $copy.Output
 
-    # THE CHANGELOG GOES LIVE WITH THE POINTER, and not before it (2026-09-26). The hub's releases
-    # page is built from this file, so it is as much a decision about what people are told as
-    # latest.yml is, and staging leaves it in next/ for exactly that reason.
-    $copyLog = Invoke-R2 @("copy", "$Slug/next/changelog.json", "$Slug/changelog.json")
-    if ($copyLog.Code -ne 0) {
-        Write-Output "RELEASE_FAIL promote: the pointer moved but the changelog did not: $($copyLog.Output)"
+    # THE SITE'S DATA AND THE CHANGELOG FIRST, THE POINTER LAST, in the same order as the workflow:
+    # until the pointer moves no installed copy is told, and the site leaves out anything newer than
+    # it, so a failure part way announces nothing that is not offered. The changelog goes live with
+    # the pointer and not before it is staged (2026-09-26): the site's notes are read from it.
+    foreach ($file in @("site/roadmap.json", "site/settings.json")) {
+        if ((Invoke-R2 @("get", "$Slug/next/$file")).Code -ne 0) {
+            Write-Output "  $file was not staged with this release; the site keeps its own"
+            continue
+        }
+        $copySite = Invoke-R2 @("copy", "$Slug/next/$file", "$Slug/$file")
+        if ($copySite.Code -ne 0) {
+            Write-Output "RELEASE_FAIL promote: $file did not move: $($copySite.Output)"
+            exit 1
+        }
+        Write-Output $copySite.Output
+    }
+    foreach ($file in @("changelog.json", "latest.yml")) {
+        $copy = Invoke-R2 @("copy", "$Slug/next/$file", "$Slug/$file")
+        if ($copy.Code -ne 0) {
+            Write-Output "RELEASE_FAIL promote: $file did not move: $($copy.Output)"
+            exit 1
+        }
+        Write-Output $copy.Output
+    }
+    Write-Output "PROMOTE_OK $stagedVersion is now what installed copies will be offered"
+    Write-Output "  The site was NOT redeployed: run the site repository's promote.yml with deploy on."
+    exit 0
+}
+
+# THE SITE'S DATA FOR THIS VERSION, STAGED BESIDE THE POINTER (2026-10-12). The site is rebuilt in
+# CI after a promote, with no copy of this repository to generate from, so the roadmap and the
+# settings reference are generated here, for the version being staged, and travel with it:
+# next/site/ now, live site/ at the promote (scripts/fetch-release-data.mjs in the site reads them).
+function Publish-SiteData {
+    param([string]$StagingDir)
+    $siteDir = Join-Path $StagingDir "site"
+    New-Item -ItemType Directory -Force $siteDir | Out-Null
+    $roadmap = Join-Path $siteDir "roadmap.json"
+    $settings = Join-Path $siteDir "settings.json"
+    $made = & python (Join-Path $PSScriptRoot "roadmap_doc.py") --released $version --out $roadmap 2>&1
+    if (($LASTEXITCODE -ne 0) -or -not (Test-Path $roadmap)) {
+        Write-Output ($made -join "`n")
+        Write-Output "RELEASE_FAIL the site's roadmap did not generate"
         exit 1
     }
-    Write-Output $copyLog.Output
-    Write-Output "PROMOTE_OK $stagedVersion is now what installed copies will be offered"
+    $made = & python (Join-Path $PSScriptRoot "settings_doc.py") --out $settings 2>&1
+    if (($LASTEXITCODE -ne 0) -or -not (Test-Path $settings)) {
+        Write-Output ($made -join "`n")
+        Write-Output "RELEASE_FAIL the site's settings reference did not generate"
+        exit 1
+    }
+    foreach ($pair in @(@{ key = "$Slug/next/site/roadmap.json"; file = $roadmap },
+                        @{ key = "$Slug/next/site/settings.json"; file = $settings })) {
+        $result = Invoke-R2 @("put", $pair.key, $pair.file)
+        if ($result.Code -ne 0) {
+            Write-Output "RELEASE_FAIL uploading the site's data ($($pair.key)): $($result.Output)"
+            exit 1
+        }
+        Write-Output $result.Output
+    }
+}
+
+if ($SiteData) {
+    Write-Output "=== staging the site's data for $Slug $version ==="
+    $staged = Invoke-R2 @("get", "$Slug/next/latest.yml")
+    $stagedVersion = (($staged.Output -split "`n") | Where-Object { $_ -match '^version:' }) -replace '^version:\s*', ''
+    if (($staged.Code -ne 0) -or ($stagedVersion -ne $version)) {
+        Write-Output "RELEASE_FAIL the staged version is '$stagedVersion', not the tree's ${version}; stage the release first"
+        exit 1
+    }
+    Publish-SiteData (Join-Path $root "release\staging")
+    Write-Output "SITE_DATA_OK staged for $version; it goes live with the promote"
     exit 0
 }
 
@@ -222,12 +364,16 @@ foreach ($step in $steps) {
     }
     Write-Output $result.Output
 }
+Publish-SiteData $staging
+# A NEW BUILD IS NEVER APPROVED BY AN OLD WORD: Friday promotes it only after -Approve.
+Set-Approval "none"
+Write-Output "  approval reset: Friday will not promote $version until tools\release.ps1 -Approve"
 
 Write-Output ""
 Write-Output "STAGE_OK $version"
 Write-Output "  staged:   https://releases.jonbarnes.dev/$Slug/next/latest.yml"
 Write-Output "  the file: https://releases.jonbarnes.dev/$Slug/$zipName"
 Write-Output ""
-Write-Output "  Nothing installed is offered this yet. To release it to everyone:"
+Write-Output "  Nothing installed is offered this yet. It goes live on Friday at 9 a.m. (New York), or now:"
 Write-Output "    powershell -ExecutionPolicy Bypass -File tools\release.ps1 -Promote"
 exit 0

@@ -76,7 +76,8 @@ static s32 MessageAssist_ArgCount(u8 c) {
     }
 }
 
-// A code the drawing must reach on its own: a stop, or one that acts only at the exact position.
+// A code the drawing must meet on its own: a stop, or one that acts only at the exact position.
+// The choices are not here: the drawing acts on them wherever it meets them and goes on drawing.
 static s32 MessageAssist_IsStop(u8 c) {
     switch (c) {
         case MESSAGE_BOX_BREAK:
@@ -90,36 +91,61 @@ static s32 MessageAssist_IsStop(u8 c) {
         case MESSAGE_AWAIT_BUTTON_PRESS:
         case MESSAGE_OCARINA:
         case MESSAGE_QUICKTEXT_ENABLE:
-        case MESSAGE_TWO_CHOICE:
-        case MESSAGE_THREE_CHOICE:
             return true;
         default:
             return false;
     }
 }
 
-// The drawn position moved on by up to `steps` characters, never past a stop.
-static u16 MessageAssist_Advance(MessageContext* msgCtx, u16 pos, s32 steps) {
-    while ((steps > 0) && (pos < msgCtx->decodedTextLen)) {
+// The drawn position moved on by up to `steps` characters, through plain characters only.
+//
+// The drawing walks [0, textDrawPos) every frame, and the last thing it meets, at textDrawPos - 1,
+// is usually one nothing has acted on yet: the game's own step leaves the position one past the
+// next thing, so every code is first met as the last thing drawn, which is where the three exact
+// position codes act, and a box's last code (its break, its end, its event) sits at decodedTextLen
+// and is met only once the position is past it. So the move waits while that last thing is a stop,
+// ends just past the first stop it meets (the drawing then meets it as its last thing, this
+// frame), and never moves the position back.
+//
+// The first version moved from textDrawPos itself and clamped to decodedTextLen. That passed an
+// exact position code the game's step had just reached, and pulled the position back off a box's
+// last code every frame, so at any Text speed but Original a box never finished: no break, no
+// choice, no event (a shop's shelf), until B forced the game's own skip.
+static u16 MessageAssist_Advance(MessageContext* msgCtx, s32 steps) {
+    const u16 end = msgCtx->decodedTextLen;
+    u16 last = 0;
+    u16 pos = 0;
+
+    // The thing the drawing meets last, found by walking the box as the drawing does, since an
+    // argument byte can hold any value.
+    while ((pos < msgCtx->textDrawPos) && (pos <= end)) {
+        last = pos;
+        pos += 1 + MessageAssist_ArgCount(MSG_BUF_DECODED[pos]);
+    }
+    if ((pos > end) || MessageAssist_IsStop(MSG_BUF_DECODED[last])) {
+        return msgCtx->textDrawPos;
+    }
+    while ((steps > 0) && (pos <= end)) {
         u8 c = MSG_BUF_DECODED[pos];
 
         if (MessageAssist_IsStop(c)) {
-            break;
+            return pos + 1;
         }
         pos += 1 + MessageAssist_ArgCount(c);
         steps--;
     }
-    return (pos < msgCtx->decodedTextLen) ? pos : msgCtx->decodedTextLen;
+    return pos;
 }
 
-// Whether an ocarina prompt lies ahead in this box, which the game's skip would jump past.
+// Whether an ocarina prompt lies ahead in this box, which the game's skip would jump past. One the
+// drawing has not yet met as its last thing is still ahead.
 static s32 MessageAssist_OcarinaAhead(MessageContext* msgCtx) {
-    u16 pos = msgCtx->textDrawPos;
+    u16 pos = 0;
 
-    while (pos < msgCtx->decodedTextLen) {
+    while (pos <= msgCtx->decodedTextLen) {
         u8 c = MSG_BUF_DECODED[pos];
 
-        if (c == MESSAGE_OCARINA) {
+        if ((c == MESSAGE_OCARINA) && (pos + 1 >= msgCtx->textDrawPos)) {
             return true;
         }
         pos += 1 + MessageAssist_ArgCount(c);
@@ -154,7 +180,7 @@ static void MessageAssist_Update(PlayState* play) {
             }
             // A (or B before an ocarina prompt): the rest of this box, up to its next stop.
             if (pressedA || pressedB) {
-                msgCtx->textDrawPos = MessageAssist_Advance(msgCtx, msgCtx->textDrawPos, 0x7FFF);
+                msgCtx->textDrawPos = MessageAssist_Advance(msgCtx, 0x7FFF);
                 msgCtx->textDelayTimer = 0;
                 return;
             }
@@ -166,7 +192,7 @@ static void MessageAssist_Update(PlayState* play) {
                 msgCtx->textDelayTimer = (msgCtx->textDelayTimer > extra) ? (msgCtx->textDelayTimer - extra) : 0;
             }
             if (msgCtx->textDelayTimer == 0) {
-                msgCtx->textDrawPos = MessageAssist_Advance(msgCtx, msgCtx->textDrawPos, extra);
+                msgCtx->textDrawPos = MessageAssist_Advance(msgCtx, extra);
             }
         }
         return;

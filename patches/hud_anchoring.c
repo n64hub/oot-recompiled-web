@@ -167,6 +167,10 @@ static void hud_align_equip(PlayState* play) {
 // Photo mode (src/main/photo.h): 1 while it has the game's HUD hidden.
 s32 recomp_photo_hud_hidden(void);
 
+// 1 while the program holds the game: a menu over it, photo mode, a comparison (src/main/shots.h,
+// frozen). The update is skipped then; the timers below must wait with it.
+s32 recomp_harness_frozen(void);
+
 // THE HUD'S FADING (2026-10-09, src/game/hud.h): what the game is doing this update, and each part's
 // opacity (bits 0 to 8, 256 the game's own) and color (bits 16 to 24, 256 full, 0 gray).
 void recomp_hud_note(u32 activity);
@@ -178,6 +182,7 @@ u32 recomp_hud_layout(s32 part);
 // frame's width over the console's 320, 16.16 (src/game/hud.h).
 u32 recomp_hud_place(void);
 u32 recomp_hud_frame_q16(void);
+u32 recomp_hud_targeting(void);
 
 #define HUD_PART_HEARTS 0
 #define HUD_PART_MAGIC 1
@@ -253,6 +258,7 @@ static s32 Hud_Words(Gfx* g) {
 #define HUD_ACT_ANY_BUTTON (1 << 5)
 #define HUD_ACT_HEALTH_LOW (1 << 6)
 #define HUD_ACT_PAUSED (1 << 7)
+#define HUD_ACT_MAP_TOGGLED (1 << 8)
 
 // The game's own alphas as the update left them, put back after the draw, so the update goes on
 // fading them from where it was and never from our scaled values.
@@ -409,6 +415,7 @@ static u32 Hud_Activity(PlayState* play) {
     static s16 sLastRupees = -1;
     static s8 sLastKeys = -1;
     static u32 sLastItems = 0;
+    static s32 sLastMinimap = -1;
     Player* player = GET_PLAYER(play);
     Input* input = &play->state.input[0];
     u32 bits = 0;
@@ -435,6 +442,13 @@ static u32 Hud_Activity(PlayState* play) {
     if (play->pauseCtx.state != PAUSE_STATE_OFF) {
         bits |= HUD_ACT_PAUSED;
     }
+    // THE MAP SHOWN OR HIDDEN (the user, 2026-10-13): the minimap's own switch, which L flips in
+    // Minimap_Draw below with its zoom sound. Any change since the last update counts, whatever
+    // flipped it.
+    if ((sLastMinimap >= 0) && (sLastMinimap != R_MINIMAP_DISABLED)) {
+        bits |= HUD_ACT_MAP_TOGGLED;
+    }
+    sLastMinimap = R_MINIMAP_DISABLED;
 
     if ((sLastHealth >= 0) && ((sLastHealth != gSaveContext.save.info.playerData.health) ||
                                (sLastMagic != gSaveContext.save.info.playerData.magic))) {
@@ -923,6 +937,28 @@ RECOMP_PATCH void Interface_Draw(PlayState* play) {
     Hud_Native(play);
 }
 
+// THE TARGETING ARROWS' OWN ROWS (the user, 2026-10-13: "we don't have a dedicated option for Z
+// targets ... the little arrows that spin around an enemy ... It could be an NPC of any kind"). The
+// game's Attention_Draw runs as always, so the lock-on state it moves every frame (the arrows closing
+// in, their fade) stays the game's own; what it drew is then taken back from the list it went to.
+// The lock-on arrows are all it writes to the overlay list and the marker over a target is all it
+// writes to the translucent one, so winding a list back to where it stood removes exactly that.
+// The overlay's part marks (Hud_Part) are all recorded before this point, so none is left past it.
+static void Hud_DrawAttention(PlayState* play) {
+    GraphicsContext* gfxCtx = play->state.gfxCtx;
+    u32 hidden = recomp_hud_targeting();
+    Gfx* overlayFrom = gfxCtx->overlay.p;
+    Gfx* xluFrom = gfxCtx->polyXlu.p;
+
+    Attention_Draw(&play->actorCtx.attention, play);
+    if (hidden & 1) {
+        gfxCtx->overlay.p = overlayFrom;
+    }
+    if (hidden & 2) {
+        gfxCtx->polyXlu.p = xluFrom;
+    }
+}
+
 // @recomp Patched to set each group's origin; see the top of the file. The game's Interface_Draw,
 // called by the HUD's fading above, which marks where each part begins (Hud_Part).
 static void Interface_DrawBody(PlayState* play) {
@@ -1095,7 +1131,7 @@ static void Interface_DrawBody(PlayState* play) {
         func_8008A994(interfaceCtx);
         if ((R_PAUSE_BG_PRERENDER_STATE != PAUSE_BG_PRERENDER_PROCESS) &&
             (R_PAUSE_BG_PRERENDER_STATE != PAUSE_BG_PRERENDER_READY)) {
-            Attention_Draw(&play->actorCtx.attention, play);
+            Hud_DrawAttention(play);   // @recomp the targeting arrows' own rows
         }
 
         // @recomp The B, C and start buttons, their icons and counts, and the A button, whose
@@ -1382,7 +1418,19 @@ static void Interface_DrawBody(PlayState* play) {
 
             timerId = TIMER_ID_MAIN;
 
-            switch (gSaveContext.timerState) {
+            // @recomp THE TIMERS WAIT WHILE THE PROGRAM HOLDS THE GAME (2026-10-21, found in the sweep
+            // before 0.6.1). The countdown lives here, in the draw, and the game's own pause stops it
+            // by the IS_PAUSED test above. Our hold (a menu open over the game, photo mode, a
+            // comparison) skips the update and goes on drawing, so a hot room's or the water's timer,
+            // or an escape's, ran out behind the menu and Link died the moment it closed. While held
+            // the switch below, all state and no drawing, is skipped; only its one choice the drawing
+            // after it reads, which timer is shown, is made here as its default case would make it.
+            s32 held = recomp_harness_frozen();
+            if (held && (gSaveContext.timerState == TIMER_STATE_OFF)) {
+                timerId = TIMER_ID_SUB;
+            }
+
+            if (!held) switch (gSaveContext.timerState) {
                 case TIMER_STATE_ENV_HAZARD_INIT:
                     sTimerStateTimer = 20;
                     sTimerNextSecondTimer = 20;

@@ -42,6 +42,7 @@
 #include "game/texture_packs.h"
 #include "main/places.h"
 #include "main/recorder.h"
+#include "main/rom_source.h"
 #include "main/screenshots.h"
 #include "main/updates.h"
 #include "game/moments.h"
@@ -52,6 +53,10 @@
 #include "main/shots.h"
 #include "main/video.h"
 #include "main/photo.h"
+#include "ui/ui_fonts.h"
+#include "ui/ui_vectors.h"
+#include "ui/ui_gradient.h"
+#include "ui/input/ui_input.h"
 #include "game/hud.h"
 #include "game/actor_registry.h"
 #include "game/camera_cuts.h"
@@ -362,6 +367,19 @@ namespace {
             return true;
         }
 
+        // PHOTO MODE HOLDS THE GAME AS A MENU DOES, AND GIVES IT NOTHING EITHER (2026-10-21, found in
+        // the sweep before 0.6.1). The game is frozen but goes on reading its controller every frame,
+        // and some of what it does with a press runs in its draw: a typing text box finishes on A, a
+        // message skips on B, the minimap flips on L. Photo mode's own defaults are those buttons
+        // (Take a picture, Put the camera back, Lower the camera), so steering the camera also acted
+        // on the game behind it. Photo mode reads its own bindings (main/photo.cpp, camera_input),
+        // never this. Whatever is still down as it ends is held back like a menu's closing press.
+        static bool s_photo_was = false;
+        if (oot::photo::active()) {
+            s_photo_was = true;
+            return true;
+        }
+
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         if (keys == nullptr) {
             return true;
@@ -399,6 +417,34 @@ namespace {
         }
         *x = std::max(-1.0f, std::min(1.0f, *x));
         *y = std::max(-1.0f, std::min(1.0f, *y));
+
+        // THE PRESS THAT CLOSED A MENU STAYS IN THE MENU (the user, 2026-10-13: "me pressing circle to
+        // leave settings menu, registers as me pressing circle in the game and i use my C button
+        // item"). The game is given nothing while a menu is open, so a button still down as the menu
+        // closes on it reads as a fresh press on the game's next frame. Whatever is down when a menu
+        // has let go (the shell's count moved) is held back until it is released, each button on its
+        // own, and the stick until it is back in the middle. The game is held while the menu is open
+        // and may read nothing in between, which is why it is a count and not this function watching.
+        static uint32_t s_releases_seen = oot::ui::shell::capture_releases();
+        static uint16_t s_held_back = 0;
+        static bool s_stick_held_back = false;
+        const uint32_t releases = oot::ui::shell::capture_releases();
+        const bool photo_ended = s_photo_was;
+        s_photo_was = false;
+        if ((releases != s_releases_seen) || photo_ended) {
+            s_releases_seen = releases;
+            s_held_back = *buttons;
+            s_stick_held_back = (*x != 0.0f || *y != 0.0f);
+        }
+        s_held_back &= *buttons;   // a button let go is the game's again
+        *buttons &= static_cast<uint16_t>(~s_held_back);
+        if (s_stick_held_back) {
+            if (*x == 0.0f && *y == 0.0f) {
+                s_stick_held_back = false;
+            }
+            *x = 0.0f;
+            *y = 0.0f;
+        }
 
         return true;
     }
@@ -490,8 +536,11 @@ namespace {
                 oot::video::toggle_pause();
                 return;
             }
-            // Photo mode (2026-10-09), while its row is On; and always to end it.
-            if ((oot::ui::photo_mode_enabled() || oot::photo::active()) && bound(GI::PhotoMode)) {
+            // Photo mode (2026-10-09), while its row is On; and always to end it. Never STARTED
+            // under an open menu (2026-10-21): closing the menu then left the game frozen, with
+            // only a toast to say why.
+            if (((oot::ui::photo_mode_enabled() && !oot::ui::shell::capturing_input()) || oot::photo::active()) &&
+                bound(GI::PhotoMode)) {
                 oot::photo::toggle();
                 return;
             }
@@ -500,8 +549,17 @@ namespace {
                 oot::photo::toggle_hud();
                 return;
             }
-            // The HUD's fading (game/hud.h), in play.
-            if (!oot::photo::active() && bound(GI::HudToggle)) {
+            // Its button guide and its picture (2026-10-13).
+            if (oot::photo::active() && bound(GI::PhotoGuide)) {
+                oot::photo::toggle_guide();
+                return;
+            }
+            if (oot::photo::active() && bound(GI::PhotoShot)) {
+                oot::screenshots::request_in_photo_mode();
+                return;
+            }
+            // The HUD's fading (game/hud.h), in play, not under a menu.
+            if (!oot::photo::active() && !oot::ui::shell::capturing_input() && bound(GI::HudToggle)) {
                 oot::hud::press_button();
                 return;
             }
@@ -535,35 +593,32 @@ namespace {
                 break;
         }
 
-        if (!oot::ui::shell::capturing_input()) {
-            return;
-        }
-
-        using Nav = oot::ui::shell::Nav;
-        switch (code) {
-            case SDL_SCANCODE_UP:
-            case SDL_SCANCODE_W:      oot::ui::shell::post_nav(Nav::Up); break;
-            case SDL_SCANCODE_DOWN:
-            case SDL_SCANCODE_S:      oot::ui::shell::post_nav(Nav::Down); break;
-            case SDL_SCANCODE_LEFT:
-            case SDL_SCANCODE_A:      oot::ui::shell::post_nav(Nav::Left); break;
-            case SDL_SCANCODE_RIGHT:
-            case SDL_SCANCODE_D:      oot::ui::shell::post_nav(Nav::Right); break;
-            case SDL_SCANCODE_X:
-            case SDL_SCANCODE_RETURN: oot::ui::shell::post_nav(Nav::Accept); break;
-            case SDL_SCANCODE_C:
-            case SDL_SCANCODE_ESCAPE: oot::ui::shell::post_nav(Nav::Back); break;
-            case SDL_SCANCODE_DELETE:
-            case SDL_SCANCODE_BACKSPACE: oot::ui::shell::post_nav(Nav::Clear); break;
-            default: break;
-        }
+        // Navigation is the input stream's (ui/input/ui_input.h, the menus plan, phase 90): it
+        // holds the key, repeats it on the tokens' schedule, and knows the keyboard spoke last.
     }
 
     // A pad's edges, through its profile (phase 50): the menu button toggles the interface the
     // way F1 does, and while a document is open the directions, A and B navigate it. The game
     // reads pad STATE in get_input; an edge here is a press since the last pump, which is what
     // a toggle and a menu step need, for the same reason the keys above are edges.
-    void handle_pad_edges(uint64_t edges) {
+    // The order below, like the key path's above, is input_bindings.h's DISPATCH_ORDER: the prompts
+    // read it to show only bindings a press reaches. Change them together.
+    void handle_pad_edges(uint64_t edges, int slot) {
+        if (edges == 0) {
+            return;
+        }
+        // One controller arriving twice (DS4Windows without HidHide, Steam's virtual pad beside the
+        // real one) sends every edge twice, a few milliseconds apart: the menu button opened the
+        // menu and closed it again. An edge another pad sent a moment ago is its echo and is dropped
+        // (ui/input/ui_input_core.h, Echoes, the same rule the menus' stream uses; 2026-10-21).
+        static oot::ui::input::Echoes s_echoes;
+        const double now = static_cast<double>(SDL_GetTicks64()) / 1000.0;
+        for (int input = 0; input < 64; ++input) {
+            const uint64_t b = uint64_t{ 1 } << input;
+            if ((edges & b) && s_echoes.echo(input, slot, now)) {
+                edges &= ~b;
+            }
+        }
         if (edges == 0) {
             return;
         }
@@ -595,7 +650,10 @@ namespace {
             oot::video::toggle_pause();
             return;
         }
-        if ((oot::ui::photo_mode_enabled() || oot::photo::active()) && has(GI::PhotoMode)) {
+        // Never started under an open menu (2026-10-21), as the key path above: a left stick
+        // pressed in while it steers the menu started photo mode beneath it.
+        if (((oot::ui::photo_mode_enabled() && !oot::ui::shell::capturing_input()) || oot::photo::active()) &&
+            has(GI::PhotoMode)) {
             oot::photo::toggle();
             return;
         }
@@ -603,21 +661,20 @@ namespace {
             oot::photo::toggle_hud();
             return;
         }
-        if (!oot::photo::active() && has(GI::HudToggle)) {
+        if (oot::photo::active() && has(GI::PhotoGuide)) {
+            oot::photo::toggle_guide();
+            return;
+        }
+        if (oot::photo::active() && has(GI::PhotoShot)) {
+            oot::screenshots::request_in_photo_mode();
+            return;
+        }
+        if (!oot::photo::active() && !oot::ui::shell::capturing_input() && has(GI::HudToggle)) {
             oot::hud::press_button();
             return;
         }
-        if (!oot::ui::shell::capturing_input()) {
-            return;
-        }
-
-        using Nav = oot::ui::shell::Nav;
-        if (has(GI::DUp) || has(GI::StickUp))       oot::ui::shell::post_nav(Nav::Up);
-        if (has(GI::DDown) || has(GI::StickDown))   oot::ui::shell::post_nav(Nav::Down);
-        if (has(GI::DLeft) || has(GI::StickLeft))   oot::ui::shell::post_nav(Nav::Left);
-        if (has(GI::DRight) || has(GI::StickRight)) oot::ui::shell::post_nav(Nav::Right);
-        if (has(GI::A))                              oot::ui::shell::post_nav(Nav::Accept);
-        if (has(GI::B))                              oot::ui::shell::post_nav(Nav::Back);
+        // Navigation is the input stream's (ui/input/ui_input.h): every pad, by button position,
+        // with repeat, so a rebound game control never moves the menus.
     }
 
     // THIS IS THE MESSAGE PUMP, and it is the only one. The comment that used to sit here said
@@ -665,6 +722,10 @@ namespace {
                             ultramodern::quit();
                         }
                     }
+                    else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                        // A key held as the window lost focus never sends its key up here.
+                        oot::ui::input::release_keys();
+                    }
                     else if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                         g_window_width.store(ev.window.data1, std::memory_order_relaxed);
                         g_window_height.store(ev.window.data2, std::memory_order_relaxed);
@@ -676,6 +737,7 @@ namespace {
                     // the game window's own header, which shows when the pointer is at the top.
                     // The game itself never reads it.
                     oot::ui::shell::post_mouse_move(ev.motion.x, ev.motion.y);
+                    oot::ui::input::mouse();
                     break;
 
                 case SDL_MOUSEBUTTONDOWN:
@@ -684,6 +746,7 @@ namespace {
                     const int button = (ev.button.button == SDL_BUTTON_LEFT) ? 0
                                      : (ev.button.button == SDL_BUTTON_RIGHT) ? 1 : 2;
                     oot::ui::shell::post_mouse_button(button, ev.type == SDL_MOUSEBUTTONDOWN);
+                    oot::ui::input::mouse();
                     break;
                 }
 
@@ -724,8 +787,14 @@ namespace {
                         oot::ui::shell::post_activity();
                         if (!oot::input::devices::capture_event(ev)) {
                             handle_key(ev.key.keysym.scancode);
+                            oot::ui::input::key(ev.key.keysym.scancode, true);
                         }
                     }
+                    break;
+
+                case SDL_KEYUP:
+                    // The input stream holds a key until it comes up (its repeat is ours).
+                    oot::ui::input::key(ev.key.keysym.scancode, false);
                     break;
 
                 case SDL_TEXTINPUT:
@@ -771,7 +840,12 @@ namespace {
         }
         // The virtual pad's script, the rumble pulses and the pads' edges, once per pump.
         oot::input::devices::tick();
-        handle_pad_edges(oot::input::devices::take_pad_edges(0));
+        // Every pad's edges, not only the first's: the menu button and the quick keys from any pad.
+        for (int slot = 0; slot < oot::input::devices::pad_count(); ++slot) {
+            handle_pad_edges(oot::input::devices::take_pad_edges(slot), slot);
+        }
+        // The interface's input stream: every pad and the keyboard, repeats, the last device.
+        oot::ui::input::pump();
         // The launcher's requests: a ROM to validate, Play, Quit, Minimize. Main thread, like
         // the runtime. The tick that starts the game gives the window its game shape and lets
         // the settings' window mode through.
@@ -1099,7 +1173,7 @@ void oot::boot::run(SDL_Window* window,
         }
         else if (arg == "--transition") {
             // The transition type the warps use, as the game numbers them (0 the wipe, 1 the
-            // triforce, 2 the fade to black, 0x20 the circle). A harness flag for the phase that
+            // stacked triangles, 2 the fade to black, 0x20 the circle). A harness flag for the phase that
             // draws a transition in a wide frame, since in play each type is reached only
             // through particular doors.
             if (i + 1 < argc) {
@@ -1256,6 +1330,34 @@ void oot::boot::run(SDL_Window* window,
             // executable and removed.
             std::exit(oot::input::selftest((oot::launch::executable_directory() / "controls.selftest.txt").string()));
         }
+        else if (arg == "--moments-selftest") {
+            // The saved moments' slot table and the moves into and out of the reserved, on
+            // placeholder files in a scratch folder under the system's temporary folder (moments.h).
+            std::exit(oot::moments::selftest());
+        }
+        else if (arg == "--rom-selftest" && i + 1 < argc) {
+            // The ROM check against the user's own ROM, in memory (rom_source.h): it tells this
+            // game from another revision and from another game by the header name's hash.
+            std::exit(oot::rom::selftest(argv[++i], oot::game_entry()));
+        }
+        else if (arg == "--ui-fonts-selftest") {
+            // The interface's three bundled faces read with FreeType, no window and no RmlUi:
+            // each names the family the tokens use and carries the weights they ask for.
+            std::exit(oot::ui::fonts::selftest((oot::launch::executable_directory() / "assets").string()));
+        }
+        else if (arg == "--ui-svg-selftest") {
+            // Every bundled SVG drawn with lunasvg at 1x and 2x, no window and no RmlUi.
+            std::exit(oot::ui::vectors::selftest((oot::launch::executable_directory() / "assets").string()));
+        }
+        else if (arg == "--ui-gradient-selftest") {
+            // The gradient decorators' ramp math against known answers, no GPU.
+            std::exit(oot::ui::gradient::selftest());
+        }
+        else if (arg == "--ui-rows-dump" && i + 1 < argc) {
+            // What every rows document says, from the tables alone, to the file named: the proof
+            // that a change to how rows are drawn changes nothing they say (menus plan, phase 95).
+            std::exit(oot::ui::shell::dump_rows(argv[++i]));
+        }
         else if (arg == "--registry-selftest") {
             // Exercise the actor registry without the game and exit with its verdict: 0 when
             // it filled to capacity, reported FULL exactly once, released, and reset cleanly.
@@ -1296,11 +1398,14 @@ void oot::boot::run(SDL_Window* window,
     if (!g_play_now) {
         oot::launch::shape_for_launcher();
         oot::ui::hold_window_mode(true);
+        // Held hidden until the splash has drawn (the user, 2026-10-13: the window showed as a
+        // black rectangle while the renderer started); launch.h says how it is shown.
+        oot::launch::hold_window_hidden();
     }
     else {
         oot::launch::shape_for_game();
+        SDL_ShowWindow(window);
     }
-    SDL_ShowWindow(window);
 
     if (g_play_now) {
         if (!oot::launch::rom_ready()) {
