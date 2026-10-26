@@ -25,7 +25,7 @@ namespace oot::install {
     bool set_options(const Options&) { return false; }
     void register_for(const std::filesystem::path&) {}
     void unregister_self() {}
-    std::string remove_everything() { return {}; }
+    std::string remove_program() { return {}; }
     std::filesystem::path shortcut_path() { return {}; }
     std::filesystem::path desktop_shortcut_path() { return {}; }
 }
