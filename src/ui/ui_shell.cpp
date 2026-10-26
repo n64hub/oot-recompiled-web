@@ -49,6 +49,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -742,7 +743,7 @@ namespace {
     float rows_cap(Screen screen) {
         if (screen == Screen::Launch) {
 #ifdef __EMSCRIPTEN__
-            // The chrome is measured at one pixel a dp; a page scales the interface (scale_to_canvas).
+            // The chrome is measured at one pixel a dp; a page scales the interface (pump's interface size).
             return static_cast<float>(g_height) -
                    static_cast<float>(launch::launcher_chrome_height()) * g_context->GetDensityIndependentPixelRatio();
 #else
@@ -1006,7 +1007,10 @@ namespace {
         if (screen == Screen::Launch) {
             rows.push_back(RowSpec{ RowKind::Rom, 0 });
             rows.push_back(RowSpec{ RowKind::Play, 0 });
+#ifndef __EMSCRIPTEN__
+            // No Quit on a page (below, at the foot of Settings).
             rows.push_back(RowSpec{ RowKind::Quit, 0 });
+#endif
             return rows;
         }
         // THE SETTINGS SPLIT (the user, 2026-10-13: "right now the settings menu is huge ... people
@@ -1043,7 +1047,10 @@ namespace {
         }
         if (screen == Screen::Capture) {
             rows.push_back(RowSpec{ RowKind::CapturePhoto, 0 });
+#ifndef __EMSCRIPTEN__
+            // A page has no video recorder (Media Foundation; web/stubs.cpp), so no Video page.
             rows.push_back(RowSpec{ RowKind::CaptureVideo, 0 });
+#endif
             return rows;
         }
         if (screen == Screen::Photo) {
@@ -1079,6 +1086,12 @@ namespace {
         // Settings itself: the program, not the game.
         for (const char* key : { "updates", "autosave", "saveonquit", "resumeonstart", "menu", "interfacesize", "volume",
                                  "menusounds" }) {
+#ifdef __EMSCRIPTEN__
+            // A page has no updater: it is updated by publishing it (web/stubs.cpp).
+            if (std::string_view(key) == "updates") {
+                continue;
+            }
+#endif
             add(key);
         }
         if (s.menu_sounds != 0) {
@@ -1586,7 +1599,12 @@ namespace {
         // The two actions' words, which live in the action bar rather than in a row.
         for (const RowSpec& spec : rows_for(screen)) {
             if (spec.kind == RowKind::Play) {
+#ifdef __EMSCRIPTEN__
+                // On a page the button is the way to give it the ROM (activate_row).
+                set_text(doc, "act-play-label", launch::rom_ready() ? "Play" : "Load ROM");
+#else
                 set_text(doc, "act-play-label", launch::rom_ready() ? "Play" : "Needs a ROM");
+#endif
             }
             else if (spec.kind == RowKind::Quit) {
                 set_text(doc, "act-quit-label", "Quit");
@@ -4758,18 +4776,6 @@ namespace {
         }
     }
 
-    // On a page the window is the canvas, the page's size, which the launcher and the game don't shape
-    // (launch.cpp), so the interface is scaled with its height, as recompui's menus are on the other
-    // recomps' pages: laid out on a canvas 720 dp high (the desktop's 960x720 game window) at every size,
-    // so each part sits at the same fraction of the height and a script's click at one size maps to
-    // another by the height (N64Recomp-browser's play_page.mjs). Every size in the style sheets is in dp.
-    // Not below 0.75, where the text would be too small to read.
-    void scale_to_canvas() {
-#ifdef __EMSCRIPTEN__
-        g_context->SetDensityIndependentPixelRatio(std::max(0.75f, static_cast<float>(g_height) / 720.0f));
-#endif
-    }
-
     // The launcher's defaults for a fresh install, chosen once when there is no settings file:
     // the console's own picture, fullscreen (2026-10-08), for the person to raise.
     void choose_machine_defaults() {
@@ -5988,7 +5994,6 @@ namespace {
             say("no RmlUi context, so there will be no interface");
             return false;
         }
-        scale_to_canvas();
         // The rows' data model (phase 95), before the documents that bind it.
         if (!oot::ui::rows::create(g_context)) {
             say("the rows' data model would not start, so the menus will have no rows");
@@ -6253,7 +6258,6 @@ namespace oot::ui::shell {
             g_height = height;
             g_resized = true;
             g_context->SetDimensions(Rml::Vector2i(width, height));
-            scale_to_canvas();
             if (g_screen == Screen::Controls) {
                 size_long_rows(g_controls_doc, "controls-rows");
             }
@@ -6276,8 +6280,15 @@ namespace oot::ui::shell {
         {
             // The row changed in the launcher: the launcher takes the new scale (launch.cpp, on the
             // main thread), and a window that is not maximized takes the new size with it.
-            static int shaped_for = -1;
             const int size_row = oot::ui::settings().interface_size;
+#ifdef __EMSCRIPTEN__
+            // On a page the window is the canvas, the page's size, which neither the launcher nor the game
+            // shapes (launch.cpp): it is the window and the display both, so the launcher and the game's
+            // menu take the same scale, Automatic the canvas's share of 1920 by 1080 as far as the menus'
+            // 960 by 720 fit in it.
+            const float dp = oot::ui::interface_scale(size_row, g_width, g_height, g_width, g_height);
+#else
+            static int shaped_for = -1;
             if (!g_game_started && size_row != shaped_for) {
                 if (shaped_for >= 0) {
                     launch::request_window_rows(1);
@@ -6289,6 +6300,7 @@ namespace oot::ui::shell {
             launch::display_size(display_w, display_h);
             const float dp = g_game_started ? oot::ui::interface_scale(size_row, g_width, g_height, display_w, display_h)
                                             : launch::launcher_scale_now();
+#endif
             if (std::fabs(dp - g_context->GetDensityIndependentPixelRatio()) > 0.001f) {
                 g_context->SetDensityIndependentPixelRatio(dp);
                 g_resized = true;

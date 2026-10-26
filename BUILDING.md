@@ -2,8 +2,8 @@
 
 This fork's `main` is OoT: Recompiled built with [Emscripten](https://emscripten.org) into a page,
 `OoTRecompiled.html`, that draws through WebGPU. The desktop build is upstream's, unchanged (the README says how);
-everything for the page is behind `__EMSCRIPTEN__` or in `web/` and `tools/`. `lib/rt64`, `lib/N64ModernRuntime` and
-`lib/RmlUi` are upstream's own submodules, at its commits, and
+everything for the page is behind `__EMSCRIPTEN__` or in `web/` and `tools/`. `lib/rt64`, `lib/N64ModernRuntime`,
+`lib/RmlUi` and `lib/lunasvg` are upstream's own submodules, at its commits, and
 [N64Recomp-browser](https://github.com/n64hub/N64Recomp-browser) (`lib/N64Recomp-browser`) patches the checkouts
 of rt64 and the runtime with the web support. `web/page.cmake`'s header says what else differs on a page.
 
@@ -45,12 +45,16 @@ and settings. N64Recomp-browser's `tools/publish_page.sh` publishes the build di
 
 ## On a page
 
-- The launcher asks nothing about updates or a copy of the ROM, and has no Quit or window buttons; the ROM row and
-  Load ROM open the browser's file picker (N64Recomp-browser's `frontend/file_picker.h`).
+- The launcher is upstream's one menu, its Play section first with Play selected, as on the desktop. It asks nothing
+  about updates or a copy of the ROM, and has no Quit or window buttons; the ROM row and Play, which reads Load ROM
+  until a ROM is in, open the browser's file picker (N64Recomp-browser's `frontend/file_picker.h`). Enter selects, as
+  a click does. Settings has no Check for updates row and Capture no Video page: a page is updated by publishing it,
+  and has no video recorder.
 - Sound plays on the browser's audio thread (N64Recomp-browser's `frontend/audio_output.h`).
-- The page's window is the canvas, the page's size: the launcher and the game don't shape it. The launcher scales with
-  the canvas's height (RmlUi's dp ratio, the height over 720, not below 0.75), so it fills a 4K canvas as it fills a
-  laptop's window.
+- The page's window is the canvas, the page's size: the launcher and the game don't shape it. The canvas is the window
+  and the display both to the Interface size row: Automatic is the canvas's share of 1920x1080 at the nearest of the
+  row's steps (75% to 150%), as far as the menus' 960x720 fit in it, in the launcher and the game alike.
+- The typefaces are upstream's bundled ones (`assets/fonts`, preloaded with the assets).
 - RT64's render to RAM stays on, as on the desktop, with the exact copy: the pause menu's background is the frame the
   game copies out of the framebuffer, and `z_play.c` flushes the task queue and filters that copy on the CPU at once
   (`PreRender_ApplyFilters`), as Majora's Mask does; a copy that lands a display list late (RT64's `renderToRAMLate`)

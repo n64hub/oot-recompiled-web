@@ -9,10 +9,11 @@
 # - The parts a browser has no use for or no way to do (the crash handler, the installer, the update check, the
 #   signature check, the video recorder) are web/stubs.cpp, which answers as each does when it is off.
 # - The interface shaders are WGSL, made from src/ui/shaders/ui.hlsl by dxc and naga as RT64's own are.
-# - The fonts are RmlUi's sample faces (src/ui/ui_shell.cpp says why), preloaded with the assets.
 # - The ROM comes from the browser's file picker (lib/N64Recomp-browser/frontend/file_picker.h) and is kept in the
 #   browser's storage (src/main/places.cpp, launch.cpp).
-# - The launcher asks nothing about updates or a copy of the ROM, and has no Quit or window buttons (ui_shell.cpp).
+# - The launcher asks nothing about updates or a copy of the ROM, and has no Quit, window buttons, Check for updates
+#   row or Video page (ui_shell.cpp). The interface size's Automatic follows the canvas, the window and the display
+#   both (ui_shell.cpp's pump).
 # - web/survey.cpp lets a script warp the game to an entrance, which records the shader list a place at a time
 #   (tools/shader_survey.js).
 
@@ -53,6 +54,11 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(RMLUI_BACKEND "native" CACHE STRING "" FORCE)
 set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 set(FREETYPE_LIBRARY "${EMSCRIPTEN_SYSROOT}/lib/wasm32-emscripten/libfreetype-legacysjlj.a" CACHE FILEPATH "")
+# The SVG plugin, compiled into RmlUi's core against lunasvg, as the desktop build has it: the line icons and the
+# medallion's layers are vectors.
+set(LUNASVG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_SOURCE_DIR}/lib/lunasvg ${CMAKE_BINARY_DIR}/lunasvg)
+set(RMLUI_SVG_PLUGIN ON CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi ${CMAKE_BINARY_DIR}/RmlUi)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64Recomp-browser/frontend ${CMAKE_BINARY_DIR}/web_frontend)
@@ -112,7 +118,7 @@ set(UI_SHADER "${CMAKE_SOURCE_DIR}/src/ui/shaders/ui.hlsl")
 set(UI_SHADER_DIR "${CMAKE_BINARY_DIR}/generated")
 set(UI_PLUME_WGSL "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/plume/examples/cmake/modules/PlumeWGSL.cmake")
 set(UI_WGSL_SOURCES)
-foreach (shader IN ITEMS "ui_vs;VSMain;vs_6_0" "ui_ps;PSMain;ps_6_0" "ui_mark_ps;PSMark;ps_6_0")
+foreach (shader IN ITEMS "ui_vs;VSMain;vs_6_0" "ui_ps;PSMain;ps_6_0" "ui_mark_ps;PSMark;ps_6_0" "ui_gradient_ps;PSGradient;ps_6_0")
     list(GET shader 0 name)
     list(GET shader 1 entry)
     list(GET shader 2 profile)
@@ -127,6 +133,14 @@ foreach (shader IN ITEMS "ui_vs;VSMain;vs_6_0" "ui_ps;PSMain;ps_6_0" "ui_mark_ps
         COMMENT "Compiling the interface shader ${entry} to WGSL")
     list(APPEND UI_WGSL_SOURCES "${UI_SHADER_DIR}/${name}.wgsl.c" "${UI_SHADER_DIR}/${name}.hlsl.wgsl.h")
 endforeach()
+
+# The tokens as a C++ header, the stylesheets' values for the input layer's repeat timing and the splash, as the
+# desktop build writes it.
+add_custom_command(
+    OUTPUT "${UI_SHADER_DIR}/ui_tokens.h"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/tokens_header.py" "${UI_SHADER_DIR}/ui_tokens.h"
+    DEPENDS "${CMAKE_SOURCE_DIR}/assets/ui/tokens.rcss" "${CMAKE_SOURCE_DIR}/tools/tokens_header.py"
+    COMMENT "Writing the interface tokens header")
 
 add_custom_command(
     OUTPUT "${CMAKE_BINARY_DIR}/generated/patches_bin.h"
@@ -148,6 +162,25 @@ add_executable(OoTRecompiled
     src/main/probe.cpp
     src/ui/ui_render.cpp
     src/ui/ui_shell.cpp
+    src/ui/ui_fonts.cpp
+    src/ui/ui_vectors.cpp
+    src/ui/ui_gradient.cpp
+    src/ui/input/ui_input_core.cpp
+    src/ui/input/ui_input.cpp
+    src/ui/nav/nav_engine.cpp
+    src/ui/nav/nav_values.cpp
+    src/ui/nav/nav_mouse.cpp
+    src/ui/nav/nav_rml.cpp
+    src/ui/models/rows_model.cpp
+    src/ui/models/shell_model.cpp
+    src/ui/models/credits.cpp
+    src/ui/prompts/prompts.cpp
+    src/ui/prompts/photo_guide.cpp
+    src/ui/keyboard/keyboard.cpp
+    src/ui/sound/ui_sound.cpp
+    src/ui/sound/synth.cpp
+    src/ui/sound/game_queue.cpp
+    src/ui/shell/shell.cpp
     src/ui/ui_settings.cpp
     src/ui/ui_lighting.cpp
     src/ui/ui_controls.cpp
@@ -158,13 +191,16 @@ add_executable(OoTRecompiled
     src/main/recorder.cpp
     src/main/sweep.cpp
     src/main/screenshots.cpp
+    src/main/capture_size.cpp
     src/main/photo.cpp
     src/game/hud.cpp
     src/main/microphone.cpp
     src/main/shots.cpp
     src/game/moments.cpp
+    src/game/warp_places.cpp
     src/ui/ui_system.cpp
     ${UI_WGSL_SOURCES}
+    "${UI_SHADER_DIR}/ui_tokens.h"
     src/game/rt64_render_context.cpp
     src/game/texture_packs.cpp
     src/game/sections.cpp
@@ -172,6 +208,7 @@ add_executable(OoTRecompiled
     src/game/game_state.cpp
     src/game/light_list.cpp
     src/game/air_movers.cpp
+    src/game/actor_room.cpp
     src/game/room_pieces.cpp
     src/game/dl_check.cpp
     src/game/actor_registry.cpp
@@ -184,6 +221,7 @@ add_executable(OoTRecompiled
     ${RSP_SOURCES})
 target_include_directories(OoTRecompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/web
     "${CMAKE_BINARY_DIR}/generated")
 target_include_directories(OoTRecompiled SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
@@ -191,7 +229,9 @@ target_include_directories(OoTRecompiled SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/hlslpp/include
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/inc
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty)
+    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty
+    # FreeType's own headers, for the fonts' self test (src/ui/ui_fonts.cpp).
+    "${EMSCRIPTEN_SYSROOT}/include/freetype2")
 target_compile_definitions(OoTRecompiled PRIVATE NOMINMAX HLSL_CPU)
 # The C runtime calls the program makes in MSVC's form (web/compat.h).
 target_compile_options(OoTRecompiled PRIVATE "SHELL:-include ${CMAKE_SOURCE_DIR}/web/compat.h")
@@ -201,17 +241,11 @@ target_link_libraries(OoTRecompiled PRIVATE
     ultramodern
     rt64
     RmlUi::Core
+    lunasvg::lunasvg
     n64recomp_browser_file_picker)
 
 # The page (lib/N64Recomp-browser/frontend), with the assets in its .data file where the desktop build copies them
-# beside the executable, and RmlUi's sample faces with their licenses among them. No ROM: the player picks theirs in
-# the launcher, and it stays in the browser.
+# beside the executable, the bundled faces and their licenses among them. No ROM: the player picks theirs in the
+# launcher, and it stays in the browser.
 n64recomp_browser_frontend_page(OoTRecompiled)
-set(OOT_WEB_FONTS "${CMAKE_SOURCE_DIR}/lib/RmlUi/Samples/assets")
-target_link_options(OoTRecompiled PRIVATE
-    "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@/assets"
-    "SHELL:--preload-file ${OOT_WEB_FONTS}/LatoLatin-Regular.ttf@/assets/web-fonts/LatoLatin-Regular.ttf"
-    "SHELL:--preload-file ${OOT_WEB_FONTS}/LatoLatin-Bold.ttf@/assets/web-fonts/LatoLatin-Bold.ttf"
-    "SHELL:--preload-file ${OOT_WEB_FONTS}/RobotoMono-Regular.ttf@/assets/web-fonts/RobotoMono-Regular.ttf"
-    "SHELL:--preload-file ${OOT_WEB_FONTS}/RobotoMono-Bold.ttf@/assets/web-fonts/RobotoMono-Bold.ttf"
-    "SHELL:--preload-file ${OOT_WEB_FONTS}/LICENSE.txt@/assets/web-fonts/LICENSE.txt")
+target_link_options(OoTRecompiled PRIVATE "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets@/assets")

@@ -19,7 +19,7 @@ fail() { printf '\nError: %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- the submodules
 step "Patching the submodules"
-git submodule update --init --recursive lib/N64ModernRuntime lib/rt64 lib/RmlUi lib/N64Recomp-browser lib/oot
+git submodule update --init --recursive lib/N64ModernRuntime lib/rt64 lib/RmlUi lib/lunasvg lib/N64Recomp-browser lib/oot
 # rt64 (with plume and hlslpp) and N64ModernRuntime (with the N64Recomp in it, which is the recompiler too): does
 # nothing for one already patched.
 cmake -P lib/N64Recomp-browser/patches/apply.cmake lib

@@ -737,7 +737,14 @@ namespace {
 
         if (g_window.texture == nullptr || g_window.width != w || g_window.height != h) {
             release_window();
+#ifdef __EMSCRIPTEN__
+            // In the format the interface's pipeline draws in, the canvas's (hook_init), which WebGPU holds a pass to:
+            // bgra8unorm on Windows, as here, rgba8unorm elsewhere, where a shot's red and blue come out swapped.
+            g_window.texture = g_device->createTexture(
+                RenderTextureDesc::ColorTarget(w, h, g_device->getCapabilities().preferredSwapChainFormat));
+#else
             g_window.texture = g_device->createTexture(RenderTextureDesc::ColorTarget(w, h, RenderFormat::B8G8R8A8_UNORM));
+#endif
             const RenderTexture* targets[] = { g_window.texture.get() };
             g_window.framebuffer = (g_window.texture != nullptr)
                                        ? g_device->createFramebuffer(RenderFramebufferDesc(targets, 1))
