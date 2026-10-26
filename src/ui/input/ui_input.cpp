@@ -15,6 +15,16 @@ namespace oot::ui::input {
         constexpr int KEYBOARD_SOURCE = -1000;
 
         Held g_keys = 0;
+#ifdef __EMSCRIPTEN__
+        // The keys that went down since the last pump, held for that pump even if they are up
+        // again by then. The pump samples g_keys once a pass, so a key that goes down and up
+        // between two passes is never seen held and its press is lost. On a page the browser's
+        // key events reach SDL's queue from the page's thread and a pass drains whatever has
+        // come, so a quick tap's down and up can arrive in the same pass: a driven browser's,
+        // a millisecond apart, did on the launcher once its shaders were built, and Enter on
+        // Load ROM did nothing.
+        Held g_pressed = 0;
+#endif
         std::atomic<int> g_last{ static_cast<int>(Device::Keyboard) };
         std::atomic<int> g_last_source{ -1 };   // the source that pressed last (last_pad_instance)
         std::set<int> g_pads_seen;
@@ -83,6 +93,11 @@ namespace oot::ui::input {
     void key(SDL_Scancode code, bool down) {
         const Held b = key_action(code);
         g_keys = down ? (g_keys | b) : (g_keys & ~b);
+#ifdef __EMSCRIPTEN__
+        if (down) {
+            g_pressed |= b;
+        }
+#endif
         if (down) {
             // Any key at all is the keyboard speaking, a game key included: the prompts follow
             // the hands, not only the menu's own keys.
@@ -93,6 +108,9 @@ namespace oot::ui::input {
 
     void release_keys() {
         g_keys = 0;
+#ifdef __EMSCRIPTEN__
+        g_pressed = 0;
+#endif
     }
 
     void mouse() {
@@ -103,7 +121,13 @@ namespace oot::ui::input {
     void pump() {
         const double now = static_cast<double>(SDL_GetTicks64()) / 1000.0;
         Stream& s = stream();
+#ifdef __EMSCRIPTEN__
+        // A tap is held for this one pass; the next sees it up and lets it go.
+        s.update(KEYBOARD_SOURCE, Device::Keyboard, g_keys | g_pressed, now);
+        g_pressed = 0;
+#else
         s.update(KEYBOARD_SOURCE, Device::Keyboard, g_keys, now);
+#endif
 
         std::set<int> seen;
         const int count = oot::input::devices::pad_count();
