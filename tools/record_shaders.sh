@@ -5,8 +5,8 @@
 # (making it on a new profile) and warps to each place of a region, and writes the list. Needs node 22 or later and
 # Chrome, and takes about 40 minutes. Then build the page again, so that it prebuilds the new list. A description the
 # old list had and the recording didn't print is lost: to keep them, save the old list first and add those to the end
-# in a section of their own. The plan clicks the launcher's button at 628,550, where it is in Chrome's
-# default 1256x645 page.
+# in a section of their own. The plan presses Enter in the launcher, which has Play
+# selected as it opens: Play reads Load ROM until the ROM is in, and opens the browser's file picker.
 #
 #   bash tools/record_shaders.sh <build dir> <ROM (NTSC-U 1.0)> [--profile <dir>] [--port <n>] [--only <section>,...]
 set -euo pipefail

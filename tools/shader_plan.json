@@ -30,8 +30,9 @@
  "setup": [
   [
    "rom",
-   628,
-   550
+   "Enter",
+   "Enter",
+   13
   ],
   [
    "wait",
@@ -40,13 +41,18 @@
  ],
  "start": [
   [
-   "click",
-   628,
-   550
+   "pressUntil",
+   "Enter",
+   "Enter",
+   13,
+   100,
+   5000,
+   "(() => { try { n64r(0x80000000); return true; } catch { return false; } })()",
+   20000
   ],
   [
    "wait",
-   20000
+   15000
   ]
  ],
  "sections": [
