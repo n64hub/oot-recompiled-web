@@ -50,7 +50,9 @@ and settings. N64Recomp-browser's `tools/publish_page.sh` publishes the build di
   until a ROM is in, open the browser's file picker (N64Recomp-browser's `frontend/file_picker.h`). Enter selects, as
   a click does. Settings has no Check for updates row and Capture no Video page: a page is updated by publishing it,
   and has no video recorder.
-- Sound plays on the browser's audio thread (N64Recomp-browser's `frontend/audio_output.h`).
+- Sound plays on the browser's audio thread (N64Recomp-browser's `frontend/audio_output.h`). The menu's own sounds
+  play there too, in the launcher; in the game the game plays its own for the menus, and the menu's own, which would
+  queue behind the game's sound on the page's one output, stay silent (`web/web_audio.h`).
 - The page's window is the canvas, the page's size: the launcher and the game don't shape it. The canvas is the window
   and the display both to the Interface size row: Automatic is the canvas's share of 1920x1080 at the nearest of the
   row's steps (75% to 150%), as far as the menus' 960x720 fit in it, in the launcher and the game alike.

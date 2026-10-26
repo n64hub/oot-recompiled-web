@@ -28,6 +28,8 @@
 // On a page the sound plays on the browser's audio thread (N64Recomp-browser's frontend/audio_output.h): SDL2's port
 // plays it from the page's thread, which WebGPU keeps busy.
 #include "audio_output.h"
+// The output, shared with the menu's own sounds in the launcher.
+#include "web_audio.h"
 #endif
 
 #include "ultramodern/ultramodern.hpp"
@@ -270,7 +272,8 @@ namespace {
     void set_frequency(uint32_t freq) {
 #ifdef __EMSCRIPTEN__
         if (g_web_rate == 0) {
-            g_web_rate = n64recomp_browser::audio::open(2);
+            g_web_rate = oot::web_audio::rate();
+            oot::web_audio::mark_game_sound();
         }
         if (g_web_stream != nullptr) {
             SDL_FreeAudioStream(g_web_stream);

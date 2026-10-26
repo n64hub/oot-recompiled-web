@@ -14,6 +14,8 @@
 # - The launcher asks nothing about updates or a copy of the ROM, and has no Quit, window buttons, Check for updates
 #   row or Video page (ui_shell.cpp). The interface size's Automatic follows the canvas, the window and the display
 #   both (ui_shell.cpp's pump).
+# - The menu's own sounds play on the page's one sound output with the game's (web/web_audio.h), in the launcher only:
+#   in the game the game plays its own for the menus.
 # - web/survey.cpp lets a script warp the game to an entrance, which records the shader list a place at a time
 #   (tools/shader_survey.js).
 
@@ -217,6 +219,7 @@ add_executable(OoTRecompiled
     src/game/recomp_api.cpp
     web/stubs.cpp
     web/survey.cpp
+    web/web_audio.cpp
     ${RECOMPILED_PATCHES}
     ${RSP_SOURCES})
 target_include_directories(OoTRecompiled PRIVATE

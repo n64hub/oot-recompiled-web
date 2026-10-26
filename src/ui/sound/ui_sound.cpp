@@ -8,6 +8,13 @@
 
 #include <SDL.h>
 
+#ifdef __EMSCRIPTEN__
+// On a page the menu's sounds play through the page's one output (web/web_audio.h), not a device of SDL's: SDL2's
+// port plays from the page's thread, which WebGPU keeps busy, and boot.cpp's game sound is on that output too.
+#include "audio_output.h"
+#include "web_audio.h"
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -74,6 +81,11 @@ namespace oot::ui::sound {
         if (g_device != 0 || g_failed) {
             return;
         }
+#ifdef __EMSCRIPTEN__
+        // No device of our own: play() queues onto the page's output, opened here for the game too.
+        std::fprintf(stderr, "[sound] the menus play on the page's output, at %u Hz\n", web_audio::rate());
+        return;
+#endif
         if (SDL_WasInit(SDL_INIT_AUDIO) == 0 && SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
             g_failed = true;
             std::fprintf(stderr, "[sound] no audio, so the menus are silent: %s\n", SDL_GetError());
@@ -113,6 +125,29 @@ namespace oot::ui::sound {
         if (game::offer(cue)) {
             return;
         }
+#ifdef __EMSCRIPTEN__
+        // The page's output is one queue, so a sound queued while the game's plays would wait behind it and hold the
+        // game's back: the menu's own set plays before the game's sound starts (the launcher), and in the game only
+        // the game's own for the menus it takes. Nor does a sound queue behind more than a short one already waiting
+        // (a held key), as SDL's mix would have dropped the oldest voice.
+        if (web_audio::game_sound()) {
+            return;
+        }
+        {
+            const uint32_t rate = web_audio::rate();
+            if (rate == 0 || n64recomp_browser::audio::queued_frames() > rate / 8) {
+                return;
+            }
+            const std::vector<float> mono = render(cue, static_cast<int>(rate), volume);
+            std::vector<float> stereo(mono.size() * 2);
+            for (size_t n = 0; n < mono.size(); ++n) {
+                stereo[2 * n] = mono[n];
+                stereo[2 * n + 1] = mono[n];
+            }
+            n64recomp_browser::audio::queue(stereo.data(), mono.size());
+            return;
+        }
+#endif
         if (g_device == 0) {
             return;
         }
