@@ -40,8 +40,7 @@ people play links at -O3).
 Serve `build-web` with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (the
 page's threads need SharedArrayBuffer), and open `OoTRecompiled.html` in Chrome or Edge, or in Firefox 141 or later on
 Windows. Load ROM opens the browser's file picker, and the ROM is then kept in the browser's storage, with the saves
-and settings. N64Recomp-browser's `tools/publish_page.sh` publishes the build dir on GitHub Pages, where
-`coi_serviceworker.js` sets those headers.
+and settings. On GitHub Pages, which can't send them, `coi_serviceworker.js` sets those headers.
 
 ## On a page
 
@@ -90,10 +89,6 @@ through `Module._oot_web_warp` (`web/survey.cpp`, which asks for the warp the de
 needed, in at most 5 minutes.
 
 ## How it plays
-
-How the page plays in Chrome and Firefox, run by run, is recorded in N64Recomp-browser's
-[plays.jsonl](https://github.com/n64hub/N64Recomp-browser/blob/main/plays.jsonl) and its
-[games table](https://github.com/n64hub/N64Recomp-browser#games).
 
 `tools/shader_survey.js` waits for the file select's hand-over on a timer. It once waited in a loop of messages to
 itself, ~10,000 tasks a second on the page's thread, which starved the tasks that carry the device thread's WebGPU work

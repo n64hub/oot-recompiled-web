@@ -12,8 +12,7 @@
 
 **Play it in the browser: https://n64hub.com/ocarina-of-time/**, with your own ROM (Ocarina of Time,
 NTSC-U 1.0), picked in the launcher and kept in the browser. It needs WebGPU (Chrome or Edge 113 and up; Firefox 141
-and up on Windows). The page is built from this branch and published with N64Recomp-browser's `tools/publish_page.sh`,
-so it can be a commit or two behind.
+and up on Windows). The page is built from this branch, so it can be a commit or two behind.
 
 A static recompilation of a Nintendo 64 game's NTSC-U 1.0 release into a native Windows
 executable.
