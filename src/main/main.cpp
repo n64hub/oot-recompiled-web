@@ -39,6 +39,7 @@
 #include "build_info.h"
 #include "main/places.h"
 #include "main/install.h"
+#include "main/reset.h"
 #include "main/recorder.h"
 #include "main/video.h"
 #include "main/updates.h"
@@ -75,6 +76,8 @@ extern "C" void recomp_message_assist(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_low_health_beep(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_free_camera_stick(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_free_camera_holds(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_gyro_aim(uint8_t* rdram, recomp_context* ctx);
+extern "C" void recomp_fire_aim(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_caster_reach(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_letterbox(uint8_t* rdram, recomp_context* ctx);
 extern "C" void recomp_traced_light_effects(uint8_t* rdram, recomp_context* ctx);
@@ -119,6 +122,10 @@ int main(int argc, char** argv) {
     // else, which is the build tree, the harness and the portable download. See src/main/places.h.
     oot::places::init();
 
+    // A start that came from Reset waits for the copy that started it to exit, before the log
+    // below moves that copy's log aside (main/reset.h).
+    oot::reset::wait_for_previous(argc, argv);
+
     // THEN, before the crash handler and before anything that can fail: where everything
     // printed goes. Under the Windows subsystem there is no console. When nothing handed us
     // standard handles (a double click, a shortcut), everything printed goes to a log beside
@@ -148,6 +155,10 @@ int main(int argc, char** argv) {
             // to send, so it belongs where the rest of their files are rather than inside bin\,
             // which an update replaces wholesale. In portable mode the two are the same place.
             const std::wstring log = (oot::places::data() / L"oot-recompiled.log").wstring();
+            // THE RUN BEFORE IS KEPT (2026-11-20: a freeze the person force closed was lost when
+            // the next start wrote over its log): the last log becomes oot-recompiled.previous.log.
+            const std::wstring previous = (oot::places::data() / L"oot-recompiled.previous.log").wstring();
+            (void)MoveFileExW(log.c_str(), previous.c_str(), MOVEFILE_REPLACE_EXISTING);
             FILE* file = nullptr;
             const bool have_log = (_wfreopen_s(&file, log.c_str(), L"w", stderr) == 0);
             if (!have_log) {
@@ -347,6 +358,10 @@ int main(int argc, char** argv) {
     recomp::overlays::register_base_export("recomp_low_health_beep", recomp_low_health_beep);
     recomp::overlays::register_base_export("recomp_free_camera_stick", recomp_free_camera_stick);
     recomp::overlays::register_base_export("recomp_free_camera_holds", recomp_free_camera_holds);
+    // Gyro aiming (patches/gyro_aim.c).
+    recomp::overlays::register_base_export("recomp_gyro_aim", recomp_gyro_aim);
+    // Fire while aiming (patches/fire_aim.c).
+    recomp::overlays::register_base_export("recomp_fire_aim", recomp_fire_aim);
     // The Shadow casters row (patches/culling.c, patches/room_behind.c).
     recomp::overlays::register_base_export("recomp_caster_reach", recomp_caster_reach);
     recomp::overlays::register_base_export("recomp_letterbox", recomp_letterbox);
@@ -439,5 +454,7 @@ int main(int argc, char** argv) {
     oot::video::shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
+    // Reset: the program starts again now that this copy has let go of its window.
+    oot::reset::relaunch_if_armed();
     return 0;
 }

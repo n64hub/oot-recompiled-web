@@ -189,6 +189,10 @@ u32 recomp_hud_targeting(void);
 #define HUD_PART_RUPEES 2
 #define HUD_PART_BUTTONS 3
 #define HUD_PART_MAP 4
+// THE CARROTS while riding, a part of their own (the user, 2026-11-22: they faded with the HUD but
+// had no row): their own fade and dim, never sized or placed, since they sit in no corner.
+#define HUD_PART_CARROTS 5
+#define HUD_PARTS 6
 #define HUD_PART_NONE -1
 
 // THE CORNERS. The parts that share a corner move together when the HUD is placed (the magic
@@ -198,6 +202,7 @@ u32 recomp_hud_targeting(void);
 #define HUD_GROUP_TOP_RIGHT 2      // the buttons
 #define HUD_GROUP_BOTTOM_RIGHT 3   // the map
 #define HUD_GROUPS 4
+#define HUD_GROUP_NONE -1          // the carrots, centered: no corner to size from or place
 
 static s32 Hud_Group(s32 part) {
     switch (part) {
@@ -208,6 +213,8 @@ static s32 Hud_Group(s32 part) {
             return HUD_GROUP_BOTTOM_LEFT;
         case HUD_PART_BUTTONS:
             return HUD_GROUP_TOP_RIGHT;
+        case HUD_PART_CARROTS:
+            return HUD_GROUP_NONE;
         default:
             return HUD_GROUP_BOTTOM_RIGHT;
     }
@@ -277,13 +284,14 @@ typedef struct {
 static HudAlphas sHudSaved;
 
 // Where each part's commands begin in the overlay list this draw, for the color pass.
-#define HUD_MARKS_MAX 8
+// Seven pieces a frame, nine while riding (the carrots and what follows them).
+#define HUD_MARKS_MAX 10
 static Gfx* sHudMarkAt[HUD_MARKS_MAX];
 static s32 sHudMarkPart[HUD_MARKS_MAX];
 static s32 sHudMarks;
 
-static u32 sHudValue[5];
-static u32 sHudLayout[5];
+static u32 sHudValue[HUD_PARTS];
+static u32 sHudLayout[HUD_PARTS];
 
 // Where each part's own drawing begins: after the viewport and, when placed, the origin that
 // Hud_Part sets for it, so a pass can tell the part's commands from the ones put there for it.
@@ -377,7 +385,7 @@ static void Hud_Part(PlayState* play, s32 part) {
         *vp = interfaceCtx->view.vp;
         gSPViewport(play->state.gfxCtx->overlay.p++, vp);
         // ITS OWN ORIGIN, when the HUD is placed (HUD sits, Custom).
-        if ((part >= 0) && (sHudPlace & HUD_PLACE_ON)) {
+        if ((part >= 0) && (Hud_Group(part) != HUD_GROUP_NONE) && (sHudPlace & HUD_PLACE_ON)) {
             Hud_PlaceOrigin(play, part);
         }
         sHudMarkBody[mark] = play->state.gfxCtx->overlay.p;
@@ -402,6 +410,11 @@ static void Hud_Part(PlayState* play, s32 part) {
             interfaceCtx->startAlpha = (s16)Hud_Scale((u16)sHudSaved.start, sHudValue[part]);
             // The hearts' alpha is also the most C up's may be, and C up is a button.
             interfaceCtx->healthAlpha = Hud_Scale(sHudSaved.health, sHudValue[part]);
+            break;
+        case HUD_PART_CARROTS:
+            // The game draws the carrots with the A button's alpha; the caller puts the buttons'
+            // back after them.
+            interfaceCtx->aAlpha = Hud_Scale(sHudSaved.a, sHudValue[part]);
             break;
         default:
             break;
@@ -775,7 +788,7 @@ static void Hud_Arrange(PlayState* play, Gfx* end) {
 
         group = Hud_Group(part);
         scale = (s32)(sHudLayout[part] & 0x3FF);
-        if ((scale > 0) && (scale != 100)) {
+        if ((scale > 0) && (scale != 100) && (group != HUD_GROUP_NONE)) {
             s32 anchorX = HUD_GROUP_RIGHT(group) ? box[i].maxX : box[i].minX;
             s32 anchorY = HUD_GROUP_BOTTOM(group) ? box[i].maxY : box[i].minY;
             s32 oldMaxY = box[i].maxY;
@@ -903,7 +916,7 @@ RECOMP_PATCH void Interface_Draw(PlayState* play) {
     }
 
     recomp_hud_note(Hud_Activity(play));
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < HUD_PARTS; i++) {
         sHudValue[i] = recomp_hud_part(i);
         sHudLayout[i] = recomp_hud_layout(i);
     }
@@ -1314,6 +1327,12 @@ static void Interface_DrawBody(PlayState* play) {
             if (gSaveContext.minigameState != 1) {
                 // Carrots rendering if the action corresponds to riding a horse
                 if (interfaceCtx->unk_1EE == 8) {
+                    // @recomp The carrots are a part of their own, with their own fade (the HUD
+                    // menu's Carrots row); the buttons' alpha is put back after them.
+                    u16 buttonsAlpha = interfaceCtx->aAlpha;
+
+                    Hud_Part(play, HUD_PART_CARROTS);
+
                     // Load Carrot Icon
                     gDPLoadTextureBlock(OVERLAY_DISP++, gCarrotIconTex, G_IM_FMT_RGBA, G_IM_SIZ_32b, 16, 16, 0,
                                         G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
@@ -1331,6 +1350,10 @@ static void Interface_DrawBody(PlayState* play) {
                         gSPTextureRectangle(OVERLAY_DISP++, svar5 << 2, ZREG(15) << 2, (svar5 + 16) << 2,
                                             (ZREG(15) + 16) << 2, G_TX_RENDERTILE, 0, 0, 1 << 10, 1 << 10);
                     }
+
+                    // @recomp The carrots end here; what follows is not a part, as before.
+                    Hud_Part(play, HUD_PART_NONE);
+                    interfaceCtx->aAlpha = buttonsAlpha;
                 }
             } else {
                 // Score for the Horseback Archery

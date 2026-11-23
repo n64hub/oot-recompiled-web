@@ -1,5 +1,37 @@
 [
   {
+    "version": "0.6.2",
+    "date": "2026-11-22",
+    "title": "Gyro aiming, Fire while aiming and Reset",
+    "summary": "Players' suggestions: aiming and looking by turning the controller, a trigger for the aimed items, a Reset that starts the game again from its opening, a question before closing, and the ROM's details as you choose it. It also fixes the scarecrow's songs after a resume and the stick after a menu at a 0% deadzone.",
+    "sections": {
+      "added": [
+        "Added Gyro aiming for controllers with a gyroscope, such as PlayStation 4 and 5 controllers and the Switch Pro Controller. On the Controls page, per controller and off until you turn it on, it aims the bow, the slingshot, the hookshot and the boomerang as you turn the controller. Gyro look, under it, turns the view the same way while you look around with C up. Gyro sensitivity (25% to 400%) and Gyro axes set how both turn.",
+        "Added Fire while aiming, a control with no binding until you give it one. Bound, it fires the bow, the slingshot, the hookshot, the longshot and the boomerang while they are up, in first person or while Z targeting: hold it to draw, let go to fire. The item's own button then no longer fires while aiming.",
+        "Added Reset to the in-game Settings section, above Quit. It closes the game, keeping a moment first when Save on quit is on, and starts it again from its opening, with the title screen and the file select rather than a resume.",
+        "Added a Close Game? question when you close in play with the window's close button, Alt+F4 or Quit. With Save on quit on it says no progress will be lost; with it off it warns in red that unsaved progress will be. A second press of the close button closes without answering.",
+        "Added the ROM's region and version, and whether it can be played, to the launcher's ROM row as soon as you choose a file.",
+        "Added a Carrots row to the HUD page, so the carrots shown while riding fade or stay shown on their own rather than with the buttons.",
+        "Added Always on top under Window on the Graphics page, which keeps the window above other programs' windows."
+      ],
+      "changed": [
+        "Changed binding a key or button to take it off any other control the same press would also work, so one press never does two things. The capture says what it was taken off, rows that already share one say so, and the keyboard always keeps one key for the menu.",
+        "Changed the controller's default layout so the left bumper is L alone and C left's second binding is the D-pad left, so C left items no longer flip the map. A controller still on the old default gets the new one; one you changed keeps yours.",
+        "Changed the window's buttons to work with Windows' snapping: dragging to an edge, the Windows and arrow keys, and the snap layouts on the maximize button. Full screen no longer shows a maximize button.",
+        "Changed the docked in-game menu's rows to put each value under its label, so long names and choices fit, including the Controls, Moments and Warps rows.",
+        "Changed Downsampling to draw the factor chosen (Off, 2x or 4x) rather than stepping down to what an estimate says fits.",
+        "Changed the About page to scroll further with each press of Up or Down, playing its sound once when the button is let go."
+      ],
+      "fixed": [
+        "Fixed the songs taught to the scarecrows being lost after Resume on start or loading a saved moment.",
+        "Fixed the stick not working in game after a menu closed with the Stick deadzone at 0%.",
+        "Fixed the docked menu covering the right end of the game window's bar and its buttons.",
+        "Fixed a frame of the docked menu showing over the launcher as Play started the game.",
+        "Fixed the launcher's background pattern ending part way across a maximized window."
+      ]
+    }
+  },
+  {
     "version": "0.6.1",
     "date": "2026-10-22",
     "title": "The bow, the longshot and Dark Link",

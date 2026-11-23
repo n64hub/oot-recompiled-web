@@ -22,6 +22,12 @@ namespace oot::launch {
         RomState state = RomState::None;
         std::string name;     // the file's name, when there is one
         std::string detail;   // why a file was refused
+        // What the file's header says (main/rom_source.h), empty where it cannot say. The title
+        // comes from the user's own file at runtime.
+        std::string title;
+        std::string region;
+        std::string version;
+        std::string format;
     };
 
     // Once, after the flags: registers the runtime's config directory beside the executable,
@@ -51,6 +57,13 @@ namespace oot::launch {
     void request_pick_rom();
     void request_play();
     void request_quit();
+    // A person asking to close (the window's close button, Alt+F4, the menu's Quit): in play, with
+    // the menus up and no quit already under way, "Close Game?" is asked first (ui_shell.h,
+    // post_ask_close) and its Yes is request_quit; otherwise it is request_quit at once.
+    void request_close();
+    // Quit, then start again straight into the game's opening (main/reset.h): Save on quit keeps
+    // its moment first, as it does for Quit and the window's close button.
+    void request_reset();
 
     // Main thread, once per pump: validates a requested ROM, starts the game on Play, quits.
     // True on the tick that started the game, so the caller can give the window its game
@@ -97,13 +110,17 @@ namespace oot::launch {
     // THE LAUNCHER'S WINDOW IS SHOWN ONCE THE SPLASH HAS BEEN DRAWN (the user, 2026-10-13, yes to
     // keeping it hidden: the window had shown as a black rectangle while the renderer started).
     // Boot holds it hidden; the interface asks for it to be shown after its first frame; the main
-    // thread shows it. If nothing asks within a few seconds (no renderer, no splash), it is shown
-    // anyway, so the program never runs without a window.
+    // thread shows it. A direct start into the game (--play, Reset's start again) is held the same
+    // way and shown once a frame of the game is presented (the user, 2026-11-22). If nothing asks
+    // within a few seconds (no renderer, no splash), it is shown anyway, so the program never runs
+    // without a window.
     void hold_window_hidden();
     void request_show_window();
     // The launcher's window maximized as the launcher takes over from the splash (the user,
     // 2026-10-13). The main thread does it; nothing once the game has the window.
     void request_maximize_launcher();
+    // The window in or out of Windows' topmost band (the Always on top row), on the main thread.
+    void request_topmost(bool on);
     // True once the window is on screen (always true when it was never held).
     bool window_shown();
 

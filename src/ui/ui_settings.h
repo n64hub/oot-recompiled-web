@@ -255,6 +255,16 @@ namespace oot::ui {
         // even if the user screen is ... capped at like 1080p"): Video size's choices (main/capture_size.h),
         // for the Screenshot control's pictures and photo mode's. 0 is the window's own size.
         int screenshot_size = 0;
+        // ALWAYS ON TOP (the user, 2026-11-20: "i'd like a setting to enforce Always on Top"): the
+        // program's window above other programs' windows, never taking the focus to get there
+        // (main/caption.h, set_topmost). Windows keeps the taskbar below a full-screen window only
+        // while that window is the active one, which it already does for the game; it brings the
+        // taskbar back when another program is active, and nothing short of pulling our window
+        // forward again and again keeps it down, so there is no over-the-taskbar choice.
+        int always_on_top = 0;
+        // THE CARROTS while riding, a HUD part of their own (the user, 2026-11-22: they faded with the
+        // HUD but had no row of their own; game/hud.h): 0 they fade with the HUD, 1 they stay shown.
+        int hud_fade_carrots = 0;
         // WHERE THE HUD SITS, CUSTOM (2026-10-09, game/hud.h, the HUD menu): each corner's distance
         // from the frame's left, right, top and bottom edges, as a share of the frame, by step.
         int hud_left = 4;

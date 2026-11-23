@@ -1,6 +1,9 @@
 #include "main/launch.h"
+#include "main/caption.h"
+#include "ui_tokens.h"
 #include "game/moments.h"
 #include "main/places.h"
+#include "main/reset.h"
 
 #include <algorithm>
 #include <atomic>
@@ -52,7 +55,7 @@ namespace oot::launch {
         std::filesystem::path g_rom_path;
 
         struct Request {
-            enum class Kind { SelectRom, PickRom, Play, Quit, Minimize, Maximize, Rows, KeepRom, Show, MaximizeLauncher } kind = Kind::Play;
+            enum class Kind { SelectRom, PickRom, Play, Quit, Reset, Minimize, Maximize, Rows, KeepRom, Show, MaximizeLauncher, Topmost } kind = Kind::Play;
             std::filesystem::path path;
             // Rows: how many list rows the document that is opening needs the window to hold.
             int rows = 0;
@@ -75,8 +78,9 @@ namespace oot::launch {
 
         void show_now(const char* why) {
             if (g_window != nullptr && !g_window_shown.load()) {
-                // Shown at the launcher's own size, centered on the screen, for the splash; it is
-                // maximized when the launcher takes over (request_maximize_launcher).
+                // Shown in the shape it was held in: the launcher's own size, centered, for the
+                // splash (maximized when the launcher takes over, request_maximize_launcher), or the
+                // game's on a direct start, whose window mode boot lets through once it is shown.
                 SDL_ShowWindow(g_window);
                 g_window_shown.store(true);
                 std::fprintf(stderr, "[launch] window shown, %s, %.2f s after it was held\n", why,
@@ -135,17 +139,11 @@ namespace oot::launch {
                 g_desktop_height.store(mode.h);
             }
         }
-        // The lid's band, draggable, and the three buttons at its right end, which are not: the
-        // same numbers as tokens.rcss's lid and --win-btn, in pixels at the window's scale.
-        //
-        // THE BUTTON WIDTH HAS TO FOLLOW --win-btn AND IS NOT CHECKED BY ANYTHING. It was 36,
-        // for the 32dp buttons the launcher used to have; the two bars now draw the same 22dp
-        // button (the user, 2026-09-20: "make them both the same exact size as the now in-game
-        // window bar"), so this is the game bar's number below. Left at 36 it would reserve a
-        // hundred and eight pixels for seventy two of buttons, and the empty strip to their left
-        // would refuse to drag the window for no reason a person could see.
-        constexpr int CHROME_HEIGHT = 112;   // the shell's head in the launcher (tokens.rcss, --mast-height)
-        constexpr int CHROME_BUTTONS = 3 * 44;   // --window-btn-width
+        // The head's band, draggable, and the three buttons at its right end, which are not, in
+        // pixels at the window's scale. Read from the tokens header, so the band follows the
+        // stylesheet; the buttons themselves answer Windows' hit test first (main/caption.h).
+        constexpr float CHROME_HEIGHT = oot::ui::tokens::mast_height;
+        constexpr float CHROME_BUTTONS = 3 * oot::ui::tokens::window_btn_width;
 
         // THE LAUNCHER'S SCALE (the Interface size row, the menus plan, phase 113): its window, its
         // draggable head and its buttons all grow with it, and the shell draws at it. Set on the
@@ -305,11 +303,33 @@ namespace oot::launch {
             }
         }
 
-        void set_status(RomState state, const std::string& name, const std::string& detail) {
+        void set_status(RomState state, const std::string& name, const std::string& detail,
+                        const oot::rom::Details& details = {}) {
             std::lock_guard<std::mutex> lock(g_mutex);
             g_status.state = state;
             g_status.name = name;
             g_status.detail = detail;
+            g_status.title = details.title;
+            g_status.region = details.region;
+            g_status.version = details.version;
+            g_status.format = details.format;
+        }
+
+        // Why a file was refused, as specific as its header allows: which version of the game it
+        // is, or that it claims the right one and its contents differ.
+        std::string refusal(recomp::RomValidationError err, const oot::rom::Details& details) {
+            if (err == recomp::RomValidationError::IncorrectVersion && !details.region.empty()) {
+                if (details.runs_here) {
+                    return "its header is the USA (NTSC-U) 1.0 version, but its contents differ from the original, "
+                           "so it is a modified or damaged copy";
+                }
+                return "this game, but the " + details.region + " version " + details.version +
+                       "; this program runs the USA (NTSC-U) version 1.0";
+            }
+            if (err == recomp::RomValidationError::IncorrectRom && !details.title.empty()) {
+                return "a ROM of another game (" + details.title + ")";
+            }
+            return error_name(err);
         }
 
 #ifdef __EMSCRIPTEN__
@@ -367,7 +387,8 @@ namespace oot::launch {
         bool take(const std::filesystem::path& path, RomState state, bool remember_it = true) {
             const std::string name = path.filename().string();
             std::vector<uint8_t> bytes;
-            const auto err = oot::rom::validate(path, oot::game_entry(), bytes);
+            oot::rom::Details details;
+            const auto err = oot::rom::validate(path, oot::game_entry(), bytes, &details);
             if (err == recomp::RomValidationError::Good) {
                 g_rom_bytes = std::move(bytes);
                 g_rom_path = path;
@@ -387,11 +408,11 @@ namespace oot::launch {
                 if (remember_it) {
                     oot::rom::remember(recomp::get_config_path(), g_rom_path);
                 }
-                set_status(state, name, "");
+                set_status(state, name, "", details);
                 std::fprintf(stderr, "[launch] rom accepted where it is: %s\n", path.string().c_str());
                 return true;
             }
-            set_status(RomState::Refused, name, error_name(err));
+            set_status(RomState::Refused, name, refusal(err, details), details);
             std::fprintf(stderr, "[launch] rom refused: %s (%s)\n", name.c_str(), error_name(err));
             return false;
         }
@@ -578,6 +599,18 @@ namespace oot::launch {
         g_requests.push_back(Request{ Request::Kind::Quit, std::filesystem::path() });
     }
 
+    void request_close() {
+        if (game_started() && !oot::moments::quit_pending() && oot::ui::shell::post_ask_close()) {
+            return;
+        }
+        request_quit();
+    }
+
+    void request_reset() {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_requests.push_back(Request{ Request::Kind::Reset, std::filesystem::path() });
+    }
+
     void request_minimize() {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_requests.push_back(Request{ Request::Kind::Minimize, std::filesystem::path() });
@@ -597,6 +630,13 @@ namespace oot::launch {
     void request_maximize_launcher() {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_requests.push_back(Request{ Request::Kind::MaximizeLauncher, std::filesystem::path() });
+    }
+
+    void request_topmost(bool on) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        Request r{ Request::Kind::Topmost, std::filesystem::path() };
+        r.rows = on ? 1 : 0;
+        g_requests.push_back(r);
     }
 
     void request_show_window() {
@@ -638,6 +678,9 @@ namespace oot::launch {
     void attach_window(SDL_Window* window) {
         g_window = window;
         note_desktop();
+        // The drawn window buttons are Windows' own caption buttons to Windows (main/caption.h),
+        // running the same requests a click on them in the interface does.
+        caption::attach(window, caption::Actions{ request_minimize, request_maximize, request_close });
     }
 
     void shape_for_launcher() {
@@ -652,6 +695,7 @@ namespace oot::launch {
         return;
 #endif
         SDL_SetWindowBordered(g_window, SDL_FALSE);
+        caption::restyle();
         int width = 0;
         int height = 0;
         launcher_size(width, height);
@@ -674,6 +718,7 @@ namespace oot::launch {
         // pointer is at the top (the shell's frame document) and the edges resizing through
         // the hit test. Coming from the launcher's shape, the window takes the game's size.
         SDL_SetWindowBordered(g_window, SDL_FALSE);
+        caption::restyle();
         SDL_SetWindowHitTest(g_window, game_hit_test, nullptr);
         if (g_launcher_shape) {
             // Out of the launcher's maximized state first: a size given to a window Windows still
@@ -738,12 +783,21 @@ namespace oot::launch {
                     break;
 
                 case Request::Kind::Quit:
-                    std::fprintf(stderr, "[launch] quit from the launcher\n");
+                case Request::Kind::Reset:
+                    std::fprintf(stderr, "[launch] %s from the menu\n", r.kind == Request::Kind::Reset ? "reset" : "quit");
+                    if (r.kind == Request::Kind::Reset) {
+                        oot::reset::arm();
+                    }
                     // Save on quit (phase 78b): a moment first, when the row asks; the pump quits
-                    // once it has landed. Otherwise now.
+                    // once it has landed. Otherwise now. A reset closes the same way, so it keeps
+                    // its moment too (the owner, 2026-11-22).
                     if (!oot::moments::on_quit_requested(game_started())) {
                         ultramodern::quit();
                     }
+                    break;
+
+                case Request::Kind::Topmost:
+                    caption::set_topmost(r.rows != 0);
                     break;
 
                 case Request::Kind::Minimize:
@@ -826,8 +880,9 @@ namespace oot::launch {
                     break;
 
                 case Request::Kind::Maximize:
-                    // Toggles: the case fills the window whatever its size.
-                    if (g_window != nullptr) {
+                    // Toggles: the case fills the window whatever its size. Not in full screen, which
+                    // already fills the display and whose bar has no maximize button.
+                    if (g_window != nullptr && !window_covers_display(g_window)) {
                         if ((SDL_GetWindowFlags(g_window) & SDL_WINDOW_MAXIMIZED) != 0) {
                             SDL_RestoreWindow(g_window);
                         }

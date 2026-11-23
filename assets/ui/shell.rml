@@ -20,7 +20,8 @@
      keeps them out of the directions, which move within the page (nav_rml.h). -->
 <body class="shell" data-model="shell"
       data-class-launcher="placement == 'launcher'" data-class-left="placement == 'left'"
-      data-class-right="placement == 'right'" data-class-center="placement == 'center'">
+      data-class-right="placement == 'right'" data-class-center="placement == 'center'"
+      data-class-under-bar="bar">
 
     <div class="sh-scrim"></div>
 

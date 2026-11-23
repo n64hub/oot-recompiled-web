@@ -318,6 +318,10 @@ namespace {
         // The size a screenshot or a photo mode picture is taken at (ui_settings.h), on the Photo page
         // under Screenshots show. The same choices as Video size, and the same meaning (capture_size.h).
         { "screenshotsize", "Screenshot size", { "Match the window", "720p", "1080p", "1440p", "4K" }, 5 },
+        // The window above other programs' windows (ui_settings.h), on the Graphics page under Window.
+        { "alwaysontop",   "Always on top",   { "Off", "On" },                                    2 },
+        // The carrots while riding, a HUD part of their own (ui_settings.h), in the HUD menu after Map.
+        { "hudfadecarrots", "Carrots",        { "Fade", "Stay shown" },                           2 },
     };
 
     // WHAT A CHOICE MEANS, shown under its row (the user, 2026-10-09: "it should have a description
@@ -476,8 +480,7 @@ namespace {
         picture.fixed_height = (s.resolution >= 3) ? FIXED_HEIGHTS[clamp_int(s.resolution - 3, 0, 3)] : 0;
         picture.aspect = (s.aspect >= 2) ? FIXED_ASPECTS[clamp_int(s.aspect - 2, 0, 3)] : 0.0;
         // The picture is drawn at this multiple of the size shown and shrunk to it, at every
-        // resolution, Match the window included since 2026-10-07; the render context's plan
-        // steps it down when the card cannot hold it (game/render.h, plan_resolution).
+        // resolution, Match the window included since 2026-10-07 (game/render.h, plan_resolution).
         config.ds_option = (s.downsampling == 2) ? 4 : (s.downsampling == 1) ? 2 : 1;
 
         // Expand is the one that actually widens the view rather than stretching it. What it
@@ -635,7 +638,8 @@ namespace oot::ui {
                scale_reload == other.scale_reload && smooth_scroll == other.smooth_scroll &&
                hud_wake_map == other.hud_wake_map && hud_reticle == other.hud_reticle &&
                hud_marker == other.hud_marker && photo_hud == other.photo_hud && photo_hud_dim == other.photo_hud_dim &&
-               screenshot_size == other.screenshot_size;
+               screenshot_size == other.screenshot_size && always_on_top == other.always_on_top &&
+               hud_fade_carrots == other.hud_fade_carrots;
     }
 
     int row_count() {
@@ -699,42 +703,9 @@ namespace oot::ui {
         if (ROWS[row].count == 0) {
             return nullptr;   // a number, not a choice; the caller formats it
         }
+        // Downsampling reads plainly, Off, 2x and 4x, and is drawn as chosen (the user,
+        // 2026-11-20: "its always just 2x 4x etc", "never say the fits part").
         const int choice = clamp_int(value, 0, ROWS[row].count - 1);
-        static const int downsampling_row = row_index("downsampling");
-        if (row == downsampling_row) {
-            // EACH OPTION SAYS WHAT IT WILL ACTUALLY DRAW (the user's option 1, 2026-10-07):
-            // "2x (4268x2400)", or "4x, only 2x fits (3840x2160)" when the card cannot hold
-            // what was asked and the renderer will step down. Planned by the renderer's own
-            // plan from the live rows with this option in place, so the label and the picture
-            // can never disagree. One buffer per option and per thread, since the rows document
-            // reads every option of a row before drawing it.
-            thread_local std::string labels[3];
-            Settings s;
-            {
-                std::lock_guard<std::mutex> lock(g_live_mutex);
-                s = g_live;
-            }
-            s.downsampling = choice;
-            ultramodern::renderer::GraphicsConfig config = ultramodern::renderer::get_graphics_config();
-            oot::renderer::PictureValues picture;
-            to_runtime(s, config, picture);
-            const oot::renderer::ResolutionPlan plan = oot::renderer::plan_resolution(config, picture);
-            std::string& label = labels[clamp_int(choice, 0, 2)];
-            label = ROWS[row].options[choice];
-            if ((plan.width > 0) && (plan.height > 0)) {
-                if (plan.used == plan.asked) {
-                    label += " (";
-                }
-                else if (plan.used > 1) {
-                    label += ", only " + std::to_string(plan.used) + "x fits (";
-                }
-                else {
-                    label += ", does not fit (";
-                }
-                label += std::to_string(plan.width) + "x" + std::to_string(plan.height) + ")";
-            }
-            return label.c_str();
-        }
         return ROWS[row].options[choice];
     }
 
@@ -823,6 +794,8 @@ namespace oot::ui {
             case 80: return s.photo_hud;
             case 81: return s.photo_hud_dim;
             case 82: return s.screenshot_size;
+            case 83: return s.always_on_top;
+            case 84: return s.hud_fade_carrots;
             default: return 0;
         }
     }
@@ -913,6 +886,8 @@ namespace oot::ui {
             case 80: s.photo_hud = value; break;
             case 81: s.photo_hud_dim = value; break;
             case 82: s.screenshot_size = value; break;
+            case 83: s.always_on_top = value; break;
+            case 84: s.hud_fade_carrots = value; break;
             default: break;
         }
     }

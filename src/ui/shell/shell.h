@@ -101,7 +101,20 @@ namespace oot::ui::menu {
         bool debugging_ = false;
     };
 
-    // The router against every rule above (ui_tests).
+    // CLOSE GAME? (the owner, 2026-11-22): what the window's close button asks in play. With Save on
+    // quit on nothing is lost; with it off the detail is a red notice.
+    struct CloseQuestion {
+        const char* detail;
+        bool danger;
+    };
+    CloseQuestion close_question(bool save_on_quit);
+
+    // One click of the close button arrives twice (a window close and a quit), so a close while the
+    // question is up counts as a second press, and closes, only this long after it was asked.
+    constexpr double CLOSE_AGAIN_SECONDS = 0.5;
+    constexpr bool second_close_counts(double since_asked) { return since_asked >= CLOSE_AGAIN_SECONDS; }
+
+    // The router against every rule above, and the close question (ui_tests).
     bool selftest(int& passed);
 
 }

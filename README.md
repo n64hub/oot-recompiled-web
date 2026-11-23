@@ -44,7 +44,7 @@ its checksum before reading anything. Nothing derived from a ROM is in this repo
 
 ## Status
 
-Version 0.3.4, released. The game boots, plays and saves; frame interpolation, widescreen and
+Version 0.6.2, released. The game boots, plays and saves; frame interpolation, widescreen and
 the redrawn interface are in; ray traced lighting, saved moments, the free camera and controller
 support are in. Upgraded textures are being worked on next.
 

@@ -54,6 +54,7 @@ namespace oot::ui::shell_model {
         std::string title;       // the current section's name
         std::string version;
         bool held = false;       // the game is held behind the menu
+        bool bar = false;        // the game window's bar is over the menu's top: its content starts under it
         std::vector<Section> sections;
         std::vector<Prompt> prompts;
         std::vector<Prompt> pins;   // the dial's pair at its top corners, PIN_SLOTS long

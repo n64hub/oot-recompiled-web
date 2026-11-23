@@ -27,9 +27,23 @@
 	decorator: linear-gradient(to bottom left, var(--cut-ground) 50%, var(--cut-light) 50%, var(--cut-light) 51.7%, transparent 51.7%);
 }
 
-/* The contour survey: our own drawing of the site's contour lines, at the size of the largest
- * panel (tools/generate_contours.py), laid under a panel's content and never over the picture. */
+/* The contour survey: our own drawing of the site's contour lines (tools/generate_contours.py),
+ * laid under a panel's content and never over the picture. The drawing repeats exactly at its
+ * edges and the svg decorator draws it once into one box, so .survey is a frame over the whole
+ * ground and the interface fills it with .survey-tile copies laid edge to edge (src/ui/ui_survey.h),
+ * which sets each copy's place and whole pixel size. */
 .survey
+{
+	position: absolute;
+	left: 0;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.survey-tile
 {
 	position: absolute;
 	left: 0;
@@ -37,5 +51,4 @@
 	width: var(--survey-width);
 	height: var(--survey-height);
 	decorator: svg(textures/contours.svg);
-	pointer-events: none;
 }

@@ -10,3 +10,7 @@ assets/ui/medallion.rcss -text
 assets/ui/textures/** -text
 assets/ui/brand/** -text
 assets/ui/prompts/** -text
+
+# Developer Studio's plan store: its history and every worklog only gain lines, so a merge keeps both sides'.
+.scaffold/execution/history.jsonl merge=union
+.worklog.md merge=union

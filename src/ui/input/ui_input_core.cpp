@@ -62,6 +62,9 @@ namespace oot::ui::input {
                 }
             }
             else {
+                if ((s.held & b) && is_direction(action) && release_) {
+                    release_(action);
+                }
                 s.repeats.erase(a);
             }
         }
@@ -152,6 +155,25 @@ namespace oot::ui::input {
         stream.forget(100);
         stream.update(100, Device::Xbox, 0, 11.0);
         check(fired.empty(), "a forgotten pad fires nothing");
+
+        // A held direction let go is reported once, however many times it repeated; Accept is not a
+        // direction, and an echo let go is silent (the About page's one sound, 2026-11-22).
+        std::vector<Action> released;
+        Stream let_go(sch, [](Action, Device) {}, [&](Action a) { released.push_back(a); });
+        for (clock = 20.0; clock < 21.0; clock += 0.01) let_go.update(0, Device::Keyboard, bit(Action::Down), clock);
+        check(released.empty(), "nothing is released while held");
+        let_go.update(0, Device::Keyboard, 0, 21.0);
+        let_go.update(0, Device::Keyboard, 0, 21.1);
+        check(released.size() == 1 && released[0] == Action::Down, "a held direction let go is released once");
+        let_go.update(0, Device::Keyboard, bit(Action::Accept), 21.2);
+        let_go.update(0, Device::Keyboard, 0, 21.3);
+        check(released.size() == 1, "letting go of Accept is not a direction's release");
+        let_go.update(1, Device::Keyboard, bit(Action::Up), 22.0);
+        let_go.update(2, Device::Xbox, bit(Action::Up), 22.0);
+        let_go.update(2, Device::Xbox, 0, 22.1);
+        check(released.size() == 1, "an echo let go releases nothing");
+        let_go.update(1, Device::Keyboard, 0, 22.2);
+        check(released.size() == 2 && released[1] == Action::Up, "the press it echoed releases once");
 
         // Two sources press the same thing at once: one press, the second is its echo (2026-10-21:
         // one controller arriving twice, DS4Windows or Steam's virtual pad, doubled every press;

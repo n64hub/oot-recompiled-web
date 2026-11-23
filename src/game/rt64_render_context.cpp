@@ -361,6 +361,14 @@ namespace {
         }
     }
 
+    // Whether two configurations differ in the downsampling factor asked for and nothing else.
+    bool only_downsampling_asked_differs(const ultramodern::renderer::GraphicsConfig& a,
+                                         const ultramodern::renderer::GraphicsConfig& b) {
+        ultramodern::renderer::GraphicsConfig same = b;
+        same.ds_option = a.ds_option;
+        return (a.ds_option != b.ds_option) && (same == a);
+    }
+
     // Graphics thread only: the constructor, update_config and update_screen's re-plan.
     void set_application_user_config(RT64::Application* application,
                                      const ultramodern::renderer::GraphicsConfig& config) {
@@ -396,7 +404,7 @@ namespace {
             else {
                 std::fprintf(stderr, "[gfx] drawing %dx%d, downsampling %dx%s; about %llu MB of a %llu MB budget\n",
                              plan.width, plan.height, plan.used,
-                             (plan.used != plan.asked) ? " (asked for more, which does not fit)" : "",
+                             (plan.bytes > plan.budget) ? " (past the budget: expect it to run slowly)" : "",
                              static_cast<unsigned long long>(plan.bytes / MB),
                              static_cast<unsigned long long>(plan.budget / MB));
             }
@@ -1080,18 +1088,14 @@ oot::renderer::ResolutionPlan oot::renderer::plan_resolution(const ultramodern::
         return 300 * MB + uint64_t(width) * uint64_t(height) * perPixel;
     };
 
-    // Half the card: the rest is the texture pack's (RT64 lets its pool grow to two thirds of
-    // the card, though the packs measured use one to two GB), the interface, the other programs
-    // on the desktop, and room for the driver. Before the card is known nothing is drawn above
-    // the size shown, which is only ever the moment before the device exists.
+    // THE FACTOR ASKED FOR IS THE FACTOR DRAWN (the user, 2026-11-20: "it should never outright
+    // deny using the setting. it must allow setting it to any of the downsampling values"). It
+    // used to step down until the estimate fit half the card's memory. The estimate and that
+    // budget are still worked out, for the log only (set_application_user_config says when the
+    // estimate passes the budget). Before the card is known nothing is drawn above the size shown,
+    // which is only ever the moment before the device exists.
     plan.budget = g_card_memory.load() / 2;
-    plan.used = plan.asked;
-    if (plan.budget == 0) {
-        plan.used = 1;
-    }
-    while ((plan.used > 1) && (estimate(plan.used, plan.width, plan.height) > plan.budget)) {
-        plan.used /= 2;
-    }
+    plan.used = (plan.budget == 0) ? 1 : plan.asked;
     plan.bytes = estimate(plan.used, plan.width, plan.height);
     return plan;
 }
@@ -1546,7 +1550,18 @@ bool oot::renderer::RT64Context::update_config(const ultramodern::renderer::Grap
         app->setFullScreen(new_config.wm_option == ultramodern::renderer::WindowMode::Fullscreen);
     }
 
+    // A CHANGE THAT DRAWS NOTHING DIFFERENTLY PUBLISHES NOTHING (2026-11-20: Downsampling moved
+    // from 2x to a 4x the plan held at 2x, and the whole program froze). Publishing discards
+    // every framebuffer, which at a large plan is gigabytes rebuilt for no change at all. Only
+    // the downsampling factor asked for differs here, and the plan already says what is drawn.
+    const RT64::UserConfiguration before = app->userConfig;
     set_application_user_config(app.get(), new_config);
+    if (only_downsampling_asked_differs(old_config, new_config) &&
+        (app->userConfig.resolutionMultiplier == before.resolutionMultiplier) &&
+        (app->userConfig.downsampleMultiplier == before.downsampleMultiplier)) {
+        log_graphics_config(new_config);
+        return true;
+    }
 
     // THE ORDER OF THESE TWO IS THE WHOLE FIX for the antialiasing crash a tester reported on
     // 2026-09-20 ("if I turn the antialiasing to off the screen flashes black for a second and

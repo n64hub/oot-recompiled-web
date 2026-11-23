@@ -46,7 +46,16 @@ namespace oot::ui::input {
         }
 
         Stream& stream() {
-            static Stream s(token_schedule(), [](Action action, Device) { deliver(action); });
+            static Stream s(token_schedule(), [](Action action, Device) { deliver(action); }, [](Action action) {
+                using Nav = oot::ui::shell::Nav;
+                switch (action) {
+                    case Action::Up:    oot::ui::shell::post_nav_release(Nav::Up); break;
+                    case Action::Down:  oot::ui::shell::post_nav_release(Nav::Down); break;
+                    case Action::Left:  oot::ui::shell::post_nav_release(Nav::Left); break;
+                    case Action::Right: oot::ui::shell::post_nav_release(Nav::Right); break;
+                    default: break;
+                }
+            });
             return s;
         }
 

@@ -66,6 +66,7 @@ namespace oot::input {
             { "photo_guide",      "Show or hide the button guide", 0 },
             { "photo_shot",       "Take a picture",  0 },
             { "hud_toggle",       "HUD",             0 },
+            { "fire_aim",         "Fire while aiming", 0 },
         };
 
         constexpr const char* HAT_NAMES[static_cast<int>(HatDirection::Count)] = { "up", "down", "left", "right" };
@@ -140,17 +141,11 @@ namespace oot::input {
             bindings[static_cast<size_t>(input)][static_cast<size_t>(slot)] = field;
         }
 
-        // Whether another input read in the same place already has this key or button.
-        bool clashes(const InputBindings& bindings, GameInput input, const Field& field) {
-            for (int i = 0; i < INPUT_COUNT; ++i) {
-                const GameInput other = static_cast<GameInput>(i);
-                if (other == input || (read_in(other) & read_in(input)) == 0) {
-                    continue;
-                }
-                for (const Field& f : bindings[static_cast<size_t>(i)]) {
-                    if (f == field) {
-                        return true;
-                    }
+        // Whether another input read in the same place already has this key or button (clashes, below).
+        bool clashes_with_another(const InputBindings& bindings, GameInput input, const Field& field) {
+            for (const BindingSlot& c : clashes(bindings, input, 0, field)) {
+                if (c.input != input) {
+                    return true;
                 }
             }
             return false;
@@ -169,7 +164,7 @@ namespace oot::input {
                     continue;
                 }
                 for (Field& f : bindings[static_cast<size_t>(i)]) {
-                    if (f.kind != FieldKind::None && clashes(bindings, static_cast<GameInput>(i), f)) {
+                    if (f.kind != FieldKind::None && clashes_with_another(bindings, static_cast<GameInput>(i), f)) {
                         f = Field{};
                     }
                 }
@@ -186,7 +181,9 @@ namespace oot::input {
             const Profile& p = a.profiles[i];
             const Profile& q = b.profiles[i];
             if (p.guid != q.guid || p.bindings != q.bindings || p.deadzone_percent != q.deadzone_percent ||
-                p.rumble != q.rumble) {
+                p.rumble != q.rumble || p.gyro != q.gyro || p.gyro_look != q.gyro_look ||
+                p.gyro_sensitivity_percent != q.gyro_sensitivity_percent ||
+                p.gyro_axes != q.gyro_axes) {
                 return false;
             }
         }
@@ -303,9 +300,10 @@ namespace oot::input {
         set_binding(out, GameInput::B,          0, button_field(SDL_CONTROLLER_BUTTON_X));
         set_binding(out, GameInput::Z,          0, axis_field(SDL_CONTROLLER_AXIS_TRIGGERLEFT, true));
         set_binding(out, GameInput::Start,      0, button_field(SDL_CONTROLLER_BUTTON_START));
+        // The N64's D-pad does nothing in this game's retail build (every read of it is a debug
+        // feature), so the pad's D-pad left is C left's instead (below) and D-pad left has none.
         set_binding(out, GameInput::DUp,        0, button_field(SDL_CONTROLLER_BUTTON_DPAD_UP));
         set_binding(out, GameInput::DDown,      0, button_field(SDL_CONTROLLER_BUTTON_DPAD_DOWN));
-        set_binding(out, GameInput::DLeft,      0, button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT));
         set_binding(out, GameInput::DRight,     0, button_field(SDL_CONTROLLER_BUTTON_DPAD_RIGHT));
         set_binding(out, GameInput::L,          0, button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
         set_binding(out, GameInput::R,          0, button_field(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
@@ -314,12 +312,13 @@ namespace oot::input {
         set_binding(out, GameInput::CDown,      0, axis_field(SDL_CONTROLLER_AXIS_RIGHTY, true));
         // C DOWN AND C LEFT HAVE A BUTTON EACH AS WELL (upgrades phase 79, the free camera): with
         // the right stick turning the camera its C bindings are silent, and the two items on
-        // these buttons would otherwise have no button at all. The right trigger and the left
-        // bumper are the two the standard layout leaves free (L, on the left bumper too, does
-        // nothing in this game's retail build). Rebinds like everything else.
+        // these buttons would otherwise have no button at all. C down takes the right trigger, and
+        // C left the D-pad left (the user, 2026-11-22: "l should be left bumper. c left must use
+        // dpad left by default"; it shared the left bumper with L, which flips the map, task #1504).
+        // Rebinds like everything else.
         set_binding(out, GameInput::CDown,      1, axis_field(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true));
         set_binding(out, GameInput::CLeft,      0, axis_field(SDL_CONTROLLER_AXIS_RIGHTX, false));
-        set_binding(out, GameInput::CLeft,      1, button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+        set_binding(out, GameInput::CLeft,      1, button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT));
         set_binding(out, GameInput::CRight,     0, axis_field(SDL_CONTROLLER_AXIS_RIGHTX, true));
         set_binding(out, GameInput::CRight,     1, button_field(SDL_CONTROLLER_BUTTON_B));
         set_binding(out, GameInput::StickUp,    0, axis_field(SDL_CONTROLLER_AXIS_LEFTY, false));
@@ -484,6 +483,19 @@ namespace oot::input {
                 else if (rest == "rumble") {
                     profile.rumble = keyvalue::as_int(value, profile.rumble ? 1 : 0) != 0;
                 }
+                else if (rest == "gyro") {
+                    profile.gyro = keyvalue::as_int(value, profile.gyro ? 1 : 0) != 0;
+                }
+                else if (rest == "gyro_look") {
+                    profile.gyro_look = keyvalue::as_int(value, profile.gyro_look ? 1 : 0) != 0;
+                }
+                else if (rest == "gyro_sensitivity") {
+                    profile.gyro_sensitivity_percent = clamp_int(keyvalue::as_int(value, profile.gyro_sensitivity_percent),
+                                                                 MIN_GYRO_SENSITIVITY_PERCENT, MAX_GYRO_SENSITIVITY_PERCENT);
+                }
+                else if (rest == "gyro_axes") {
+                    profile.gyro_axes = clamp_int(keyvalue::as_int(value, profile.gyro_axes), 0, GYRO_AXES_COUNT - 1);
+                }
                 else {
                     GameInput input;
                     int slot;
@@ -510,7 +522,7 @@ namespace oot::input {
             // where nothing read in the same place has that button.
             const auto give = [&](GameInput input, int slot, const Field& field) {
                 Field& f = profile.bindings[static_cast<size_t>(input)][static_cast<size_t>(slot)];
-                if (f.kind == FieldKind::None && !clashes(profile.bindings, input, field)) {
+                if (f.kind == FieldKind::None && !clashes_with_another(profile.bindings, input, field)) {
                     f = field;
                 }
             };
@@ -522,7 +534,22 @@ namespace oot::input {
                 give(GameInput::CDown, 1, axis_field(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true));
             }
             if (slots(GameInput::CLeft)[0] == axis_field(SDL_CONTROLLER_AXIS_RIGHTX, false)) {
-                give(GameInput::CLeft, 1, button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
+                give(GameInput::CLeft, 1, button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT));
+            }
+            // THE LEFT BUMPER ON BOTH L AND C LEFT (task #1504; the user, 2026-11-22: "l should be left
+            // bumper. c left must use dpad left by default"). A profile still holding that old default
+            // as it came, the N64's D-pad left on the pad's D-pad left beside it, gets the new one: C
+            // left's second on the D-pad left, which the N64's D-pad left (unused in play) gives up.
+            {
+                const Field bumper = button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+                const Field dpad_left = button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+                auto& c_left = profile.bindings[static_cast<size_t>(GameInput::CLeft)];
+                auto& d_left = profile.bindings[static_cast<size_t>(GameInput::DLeft)];
+                if (slots(GameInput::L)[0] == bumper && c_left[1] == bumper && d_left[0] == dpad_left &&
+                    d_left[1].kind == FieldKind::None) {
+                    c_left[1] = dpad_left;
+                    d_left[0] = Field{};
+                }
             }
             // A PROFILE FROM BEFORE THE PICTURE CONTROL (2026-10-13; it has no photo_shot line)
             // saved photo mode with no pad button, which was then the default; it gets the left
@@ -551,6 +578,10 @@ namespace oot::input {
             const std::string prefix = "profile." + profile.guid + ".";
             file << prefix << "deadzone = " << profile.deadzone_percent << "\n";
             file << prefix << "rumble = " << (profile.rumble ? 1 : 0) << "\n";
+            file << prefix << "gyro = " << (profile.gyro ? 1 : 0) << "\n";
+            file << prefix << "gyro_look = " << (profile.gyro_look ? 1 : 0) << "\n";
+            file << prefix << "gyro_sensitivity = " << profile.gyro_sensitivity_percent << "\n";
+            file << prefix << "gyro_axes = " << profile.gyro_axes << "\n";
             write_bindings(file, prefix, profile.bindings);
         }
         return file.good();
@@ -601,6 +632,42 @@ namespace oot::input {
         return bindings.profiles.back();
     }
 
+    std::vector<BindingSlot> clashes(const InputBindings& map, GameInput input, int slot, const Field& field) {
+        std::vector<BindingSlot> out;
+        if (field.kind == FieldKind::None) {
+            return out;
+        }
+        for (int i = 0; i < INPUT_COUNT; ++i) {
+            const GameInput other = static_cast<GameInput>(i);
+            if ((read_in(other) & read_in(input)) == 0) {
+                continue;
+            }
+            for (int s = 0; s < BINDINGS_PER_INPUT; ++s) {
+                if ((other == input && s == slot) || map[static_cast<size_t>(i)][static_cast<size_t>(s)] != field) {
+                    continue;
+                }
+                out.push_back(BindingSlot{ other, s });
+            }
+        }
+        return out;
+    }
+
+    std::vector<BindingSlot> bind_moving(InputBindings& map, bool keyboard, GameInput input, int slot, const Field& field) {
+        std::vector<BindingSlot> moved;
+        for (const BindingSlot& c : clashes(map, input, slot, field)) {
+            auto& slots = map[static_cast<size_t>(c.input)];
+            const bool last_menu_key = keyboard && c.input == GameInput::Menu &&
+                                       slots[static_cast<size_t>(1 - c.slot)].kind == FieldKind::None;
+            if (last_menu_key) {
+                continue;
+            }
+            slots[static_cast<size_t>(c.slot)] = Field{};
+            moved.push_back(c);
+        }
+        set_binding(map, input, slot, field);
+        return moved;
+    }
+
     int selftest(const std::string& temp_path) {
         // A file with every kind of value, and garbage where a person could put it.
         {
@@ -625,6 +692,10 @@ namespace oot::input {
                  << "profile.0300abcd.c_right.0 = jhat:0:sideways\n"   // garbage direction: none
                  << "profile.0300abcd.deadzone = 500\n"          // clamped to 90
                  << "profile.0300abcd.rumble = 7\n"              // any non-zero is on
+                 << "profile.0300abcd.gyro = 1\n"
+                 << "profile.0300abcd.gyro_look = 2\n"           // any non-zero is on
+                 << "profile.0300abcd.gyro_sensitivity = 5000\n" // clamped to 400
+                 << "profile.0300abcd.gyro_axes = 9\n"           // clamped to 3
                  << "profile.0300abcd.stick_up.0 = jaxis-:1\n"
                  << "profile.0300abcd.stick_up.1 = axis-:-5\n";  // negative index: none
         }
@@ -659,6 +730,12 @@ namespace oot::input {
         if (pb(GameInput::CRight, 0).kind != FieldKind::None) return fail("garbage hat direction did not read as none");
         if (p.deadzone_percent != MAX_DEADZONE_PERCENT) return fail("deadzone not clamped");
         if (!p.rumble) return fail("rumble not read");
+        if (!p.gyro) return fail("gyro not read");
+        if (!p.gyro_look) return fail("gyro look not read");
+        if (Profile{}.gyro_look) return fail("gyro look is on before it is asked for");
+        if (p.gyro_sensitivity_percent != MAX_GYRO_SENSITIVITY_PERCENT) return fail("gyro sensitivity not clamped");
+        if (p.gyro_axes != GYRO_AXES_COUNT - 1) return fail("gyro axes not clamped");
+        if (Profile{}.gyro) return fail("gyro aiming is on before it is asked for");
         if (pb(GameInput::StickUp, 0).kind != FieldKind::JoystickAxisNegative || pb(GameInput::StickUp, 0).index != 1) return fail("joystick axis not read");
         if (pb(GameInput::StickUp, 1).kind != FieldKind::None) return fail("negative index did not read as none");
         // A profile fills the bindings it does not name from the controller defaults.
@@ -670,10 +747,93 @@ namespace oot::input {
         if (pb(GameInput::PhotoShot, 0) != button_field(SDL_CONTROLLER_BUTTON_A)) return fail("a new pad default was not given");
         if (pb(GameInput::PhotoMode, 0) != button_field(SDL_CONTROLLER_BUTTON_LEFTSTICK)) return fail("photo mode's pad default was not given");
 
+        // CLASHES. The right trigger given to Fire while aiming comes off C down's second slot, which is
+        // read at the same time; the A button stays photo mode's picture as well as the game's A, since
+        // photo mode is read apart; the keyboard's only Menu key is never taken; nothing clashes with none.
+        {
+            InputBindings pad;
+            controller_defaults(pad);
+            const Field trigger = axis_field(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, true);
+            const auto at = [&pad](GameInput input, int slot) -> const Field& {
+                return pad[static_cast<size_t>(input)][static_cast<size_t>(slot)];
+            };
+            if (at(GameInput::CDown, 1) != trigger) return fail("the right trigger is not C down's second binding by default");
+            const std::vector<BindingSlot> moved = bind_moving(pad, false, GameInput::FireAim, 0, trigger);
+            if (moved.size() != 1 || moved[0].input != GameInput::CDown || moved[0].slot != 1) {
+                return fail("binding the right trigger did not report taking it off C down");
+            }
+            if (at(GameInput::CDown, 1).kind != FieldKind::None || at(GameInput::FireAim, 0) != trigger) {
+                return fail("the right trigger was not moved from C down to Fire while aiming");
+            }
+            if (!clashes(pad, GameInput::PhotoShot, 0, button_field(SDL_CONTROLLER_BUTTON_A)).empty()) {
+                return fail("photo mode's picture clashed with the game's A, which is never read with it");
+            }
+            if (!clashes(pad, GameInput::A, 0, Field{}).empty()) return fail("an empty slot clashed");
+
+            // THE DEFAULT LAYOUTS SHARE NOTHING: no key or button of either is on two controls read at
+            // the same time (the left bumper was L's and C left's, task #1504). L keeps the left
+            // bumper; C left's second is the D-pad left.
+            InputBindings fresh_pad;
+            controller_defaults(fresh_pad);
+            InputBindings fresh_keys;
+            keyboard_defaults(fresh_keys);
+            for (const InputBindings* map : { &fresh_pad, &fresh_keys }) {
+                for (int i = 0; i < INPUT_COUNT; ++i) {
+                    for (int s = 0; s < BINDINGS_PER_INPUT; ++s) {
+                        const GameInput input = static_cast<GameInput>(i);
+                        if (!clashes(*map, input, s, (*map)[static_cast<size_t>(i)][static_cast<size_t>(s)]).empty()) {
+                            std::fprintf(stderr, "CONTROLS_SELFTEST: %s slot %d shares its default\n", input_key(input), s);
+                            return fail("a default layout puts one key or button on two controls read at once");
+                        }
+                    }
+                }
+            }
+            if (fresh_pad[static_cast<size_t>(GameInput::L)][0] != button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) ||
+                fresh_pad[static_cast<size_t>(GameInput::CLeft)][1] != button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT)) {
+                return fail("L is not on the left bumper or C left's second is not the D-pad left");
+            }
+
+            InputBindings keys;
+            keyboard_defaults(keys);
+            const Field f1 = key_field(SDL_SCANCODE_F1);
+            if (!bind_moving(keys, true, GameInput::A, 1, f1).empty() ||
+                keys[static_cast<size_t>(GameInput::Menu)][0] != f1) {
+                return fail("the keyboard's only Menu key was taken");
+            }
+        }
+
         // The round trip: what is saved is what is loaded.
         if (!save(temp_path, loaded)) return fail("save failed");
         const Bindings again = load(temp_path);
         if (!(again == loaded)) return fail("round trip changed something");
+
+        // A saved profile still holding the old left bumper default on L and C left gets C left's on
+        // the D-pad left; one whose C left was moved by hand keeps it.
+        {
+            std::ofstream file(temp_path, std::ios::trunc);
+            file << "profile.0300beef.l.0 = button:" << SDL_CONTROLLER_BUTTON_LEFTSHOULDER << "\n"
+                 << "profile.0300beef.c_left.1 = button:" << SDL_CONTROLLER_BUTTON_LEFTSHOULDER << "\n"
+                 << "profile.0300beef.d_left.0 = button:" << SDL_CONTROLLER_BUTTON_DPAD_LEFT << "\n"
+                 << "profile.0300feed.l.0 = button:" << SDL_CONTROLLER_BUTTON_LEFTSHOULDER << "\n"
+                 << "profile.0300feed.c_left.1 = button:" << SDL_CONTROLLER_BUTTON_Y << "\n";
+        }
+        const Bindings old = load(temp_path);
+        const auto field = [&old](const char* guid, GameInput input, int slot) -> Field {
+            for (const Profile& p : old.profiles) {
+                if (p.guid == guid) {
+                    return p.bindings[static_cast<size_t>(input)][static_cast<size_t>(slot)];
+                }
+            }
+            return Field{};
+        };
+        if (field("0300beef", GameInput::CLeft, 1) != button_field(SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
+            field("0300beef", GameInput::DLeft, 0).kind != FieldKind::None ||
+            field("0300beef", GameInput::L, 0) != button_field(SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) {
+            return fail("a profile with the old left bumper default was not given the D-pad left for C left");
+        }
+        if (field("0300feed", GameInput::CLeft, 1) != button_field(SDL_CONTROLLER_BUTTON_Y)) {
+            return fail("a C left moved by hand was changed");
+        }
 
         // Every field kind survives the spelling.
         for (int k = 0; k < static_cast<int>(FieldKind::Count); ++k) {
@@ -726,7 +886,6 @@ namespace oot::input {
         const Bindings missing = load(temp_path);
         if (missing.keyboard != defaults || !missing.profiles.empty()) return fail("a missing file was not the defaults");
 
-        std::printf("CONTROLS_SELFTEST_OK\n");
         return 0;
     }
 

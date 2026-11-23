@@ -183,14 +183,12 @@ namespace oot {
         void set_picture(const PictureValues& values);
 
         // WHAT THE PICTURE IS DRAWN AT (the user's choice of 2026-10-07, "go with option one"),
-        // worked out in one place for the renderer and for the Downsampling row's labels, so the
-        // row can never say one thing while the renderer does another.
+        // worked out in one place for the renderer.
         //
         // Downsampling draws above the size shown and shrinks it to that size, AT MATCH THE
         // WINDOW TOO: it was not read there, so the row did nothing at the setting most people
-        // play at. And the most it may draw is HALF THE CARD'S OWN MEMORY rather than a fixed
-        // 2880 lines, estimated from what is on: a combination that does not fit steps its
-        // downsampling down until it does, and the row says so.
+        // play at. The factor chosen is always the factor drawn (the user, 2026-11-20); the
+        // video memory it needs is estimated against half the card for the log alone.
         //
         // The estimate is the measured one (the harness, 2026-10-07, the game's own video memory
         // on the user's card): about 300 MB, plus per pixel drawn 8 bytes, 44 for each

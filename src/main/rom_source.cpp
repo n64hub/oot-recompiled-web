@@ -1,5 +1,6 @@
 #include "rom_source.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <fstream>
@@ -109,14 +110,109 @@ namespace oot::rom {
                    oot::ROM_HEADER_NAME_FNV1A;
         }
 
+        // The header's fields, in the ROM's own byte order: the name's 20 bytes, then the game
+        // code whose last two bytes are the region's letter and the version number.
+        constexpr size_t HEADER_LENGTH = 0x40;
+        constexpr size_t TITLE_LENGTH = 20;
+        constexpr size_t REGION_OFFSET = 0x3E;
+        constexpr size_t VERSION_OFFSET = 0x3F;
+
+        // The one revision this program is built for (CLAUDE.md, "Version lock").
+        constexpr char RUNS_REGION = 'E';
+        constexpr uint8_t RUNS_VERSION = 0;
+
+        std::string region_name(char code) {
+            switch (code) {
+                case 'E': return "USA (NTSC-U)";
+                case 'J': return "Japan (NTSC-J)";
+                case 'P': case 'X': case 'Y': case 'Z': return "Europe (PAL)";
+                case 'D': return "Germany (PAL)";
+                case 'F': return "France (PAL)";
+                case 'I': return "Italy (PAL)";
+                case 'S': return "Spain (PAL)";
+                case 'H': return "Netherlands (PAL)";
+                case 'W': return "Scandinavia (PAL)";
+                case 'U': return "Australia (PAL)";
+                case 'N': return "Canada (NTSC)";
+                case 'A': return "Asia (NTSC)";
+                case 'K': return "Korea (NTSC)";
+                case 'B': return "Brazil (MPAL)";
+                case 'C': return "China (iQue)";
+                default: break;
+            }
+            if (code > ' ' && code < 0x7F) {
+                return std::string("region code ") + code;
+            }
+            return "an unknown region";
+        }
+
+        std::string version_name(uint8_t number) {
+            if (number < 10) {
+                return "1." + std::to_string(number);
+            }
+            return "revision " + std::to_string(number);
+        }
+
+        // Printable ASCII only, up to the first NUL, with the padding trimmed: a header from
+        // another game may hold anything.
+        std::string title_text(const uint8_t* bytes) {
+            std::string text;
+            for (size_t i = 0; i < TITLE_LENGTH && bytes[i] != 0; ++i) {
+                if (bytes[i] >= 0x20 && bytes[i] < 0x7F) {
+                    text.push_back(static_cast<char>(bytes[i]));
+                }
+            }
+            while (!text.empty() && text.back() == ' ') {
+                text.pop_back();
+            }
+            return text;
+        }
+
     } // namespace
+
+    Details describe(const std::vector<uint8_t>& bytes) {
+        Details details;
+        std::vector<uint8_t> header(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(std::min(bytes.size(), HEADER_LENGTH)));
+        header.resize((header.size() + 3) & ~static_cast<size_t>(3));
+
+        switch (detect_byteswap(header)) {
+            case Byteswap::Invalid:
+                return details;
+            case Byteswap::None:
+                details.format = "z64";
+                break;
+            case Byteswap::Groups2:
+                details.format = "v64";
+                apply_byteswap(header, 1);
+                break;
+            case Byteswap::Groups4:
+                details.format = "n64";
+                apply_byteswap(header, 3);
+                break;
+        }
+        if (bytes.size() < HEADER_LENGTH) {
+            return details;
+        }
+
+        details.title = title_text(header.data() + oot::ROM_HEADER_NAME_OFFSET);
+        details.region = region_name(static_cast<char>(header[REGION_OFFSET]));
+        details.version = version_name(header[VERSION_OFFSET]);
+        details.this_game = header_name_matches(header);
+        details.runs_here = details.this_game && header[REGION_OFFSET] == RUNS_REGION &&
+                            header[VERSION_OFFSET] == RUNS_VERSION;
+        return details;
+    }
 
     recomp::RomValidationError validate(const std::filesystem::path& path,
                                         const recomp::GameEntry& entry,
-                                        std::vector<uint8_t>& contents) {
+                                        std::vector<uint8_t>& contents,
+                                        Details* details) {
         contents.clear();
 
         std::vector<uint8_t> bytes = read_whole_file(path);
+        if (details != nullptr) {
+            *details = describe(bytes);
+        }
         if (bytes.empty()) {
             return recomp::RomValidationError::FailedToOpen;
         }
@@ -195,7 +291,76 @@ namespace oot::rom {
             return fail("a file too short for the name was not another game");
         }
 
+        // The header of the user's own ROM says it is the one revision this program runs.
+        const Details own = describe(original);
+        if (!own.this_game || !own.runs_here || own.region != "USA (NTSC-U)" || own.version != "1.0" || own.title.empty()) {
+            return fail("the right ROM's header did not read as this game's USA 1.0");
+        }
+
         std::printf("ROM_SELFTEST_OK\n");
+        return 0;
+    }
+
+    int details_selftest() {
+        int failures = 0;
+        const auto expect = [&failures](bool ok, const char* what) {
+            if (!ok) {
+                std::fprintf(stderr, "ROM_DETAILS_SELFTEST_FAILED: %s\n", what);
+                ++failures;
+            }
+        };
+
+        // A made-up header in the native order: another game's name, Europe, version 1.1.
+        std::vector<uint8_t> z64(HEADER_LENGTH + 8, 0);
+        std::copy(FIRST_BYTES.begin(), FIRST_BYTES.end(), z64.begin());
+        const std::string_view name = "SELF TEST ROM       ";
+        std::copy(name.begin(), name.end(), z64.begin() + oot::ROM_HEADER_NAME_OFFSET);
+        z64[REGION_OFFSET] = 'P';
+        z64[VERSION_OFFSET] = 1;
+
+        std::vector<uint8_t> v64 = z64;
+        apply_byteswap(v64, 1);
+        std::vector<uint8_t> n64 = z64;
+        apply_byteswap(n64, 3);
+
+        for (const auto& [bytes, format] : { std::pair{ z64, "z64" }, std::pair{ v64, "v64" }, std::pair{ n64, "n64" } }) {
+            const Details d = describe(bytes);
+            expect(d.format == format, "the byte order was not named");
+            expect(d.title == "SELF TEST ROM", "the title was not read and trimmed");
+            expect(d.region == "Europe (PAL)", "region P was not Europe (PAL)");
+            expect(d.version == "1.1", "version 1 was not 1.1");
+            expect(!d.this_game && !d.runs_here, "another game's header read as this game");
+        }
+
+        std::vector<uint8_t> other = z64;
+        other[REGION_OFFSET] = 'E';
+        other[VERSION_OFFSET] = 0;
+        expect(describe(other).region == "USA (NTSC-U)" && describe(other).version == "1.0", "E and 0 were not USA 1.0");
+        expect(!describe(other).runs_here, "USA 1.0 of another game read as runnable");
+        other[REGION_OFFSET] = 'Q';
+        other[VERSION_OFFSET] = 12;
+        expect(describe(other).region == "region code Q", "an unlisted region was not named by its code");
+        expect(describe(other).version == "revision 12", "a large version number was not a revision");
+        other[REGION_OFFSET] = 0x01;
+        expect(describe(other).region == "an unknown region", "an unprintable region code was shown");
+
+        std::vector<uint8_t> odd = z64;
+        odd[oot::ROM_HEADER_NAME_OFFSET + 1] = 0x07;
+        odd[oot::ROM_HEADER_NAME_OFFSET + 5] = 0;
+        expect(describe(odd).title == "SLF", "an unprintable byte or a NUL in the title was kept");
+
+        const std::vector<uint8_t> short_file(z64.begin(), z64.begin() + 0x24);
+        const Details s = describe(short_file);
+        expect(s.format == "z64" && s.title.empty() && s.region.empty(), "a short file was read past its end");
+
+        const std::string_view text = "this is a text file, not a cartridge image";
+        expect(describe(std::vector<uint8_t>(text.begin(), text.end())).format.empty(), "a text file was given a byte order");
+        expect(describe({}).format.empty(), "an empty file was given a byte order");
+
+        if (failures != 0) {
+            return 1;
+        }
+        std::printf("ROM_DETAILS_SELFTEST_OK\n");
         return 0;
     }
 

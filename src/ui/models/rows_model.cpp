@@ -2,7 +2,10 @@
 
 #include "ui/models/rows_model.h"
 
+#include "ui_tokens.h"
+
 #include <RmlUi/Core.h>
+#include <json/json.hpp>
 
 #include <array>
 #include <cstdio>
@@ -12,9 +15,10 @@ namespace oot::ui::rows {
     namespace {
 
         constexpr const char* MODEL = "rows";
-        constexpr std::array<const char*, 5> NAMES = { "launch", "settings", "lighting", "hud", "debug" };
+        constexpr std::array<const char*, 7> NAMES = { "launch", "settings", "lighting", "hud", "debug",
+                                                       "controlstop", "controlsfoot" };
 
-        std::array<std::vector<Row>, 5> g_lists;
+        std::array<std::vector<Row>, NAMES.size()> g_lists;
         Rml::DataModelHandle g_handle;
 
         size_t at(List list) {
@@ -62,7 +66,8 @@ namespace oot::ui::rows {
 
     // THE ONE ROW TEMPLATE. What the string builders wrote per row (stepper_html, check_html,
     // action_html, retired in phase 95), written once and bound: a divider when the row carries a
-    // section, the label, the value drawn by its shape, the note under it. The ids are the ones the
+    // section, the label and the value drawn by its shape (together in .text, side by side or, in
+    // a narrow page, one over the other: stacked() below), the note under it. The ids are the ones the
     // shell's clicks and focus have always read; an id a shape does not use is left empty, so a
     // check's next- id and a stepper's never both exist.
     void install(Rml::Element* container, List list) {
@@ -76,13 +81,14 @@ namespace oot::ui::rows {
                 "<div class=\"row\" data-attr-id=\"'row-' + row.n\" data-class-noted=\"row.note != ''\" data-class-acting=\"row.shape == 3\" data-class-on=\"row.focused\""
                     " data-class-plated=\"row.icon != ''\">"
                     "<span class=\"mi\" data-if=\"row.icon != ''\"><span class=\"mi-ic\" data-style-decorator=\"'svg(../icons/' + row.icon + '.svg)'\"></span></span>"
+                    "<span class=\"text\">"
                     "<span class=\"label\" data-attr-id=\"'label-' + row.n\">{{row.label}}</span>"
                     "<span class=\"value\" data-attr-id=\"'value-' + row.n\">"
                         "<span class=\"choices\" data-if=\"row.shape == 1 && row.choices.size > 0\">"
                             "<span class=\"pick\" data-for=\"c, ci : row.choices\" data-class-in=\"c.chosen\""
                                 " data-attr-id=\"'pick-' + row.n + '-' + ci\">{{c.label}}</span>"
                         "</span>"
-                        "<span class=\"step\" data-if=\"row.shape == 1 && row.choices.size == 0\" data-class-spent=\"row.low\""
+                        "<span class=\"step prev\" data-if=\"row.shape == 1 && row.choices.size == 0\" data-class-spent=\"row.low\""
                             " data-attr-id=\"row.shape == 1 ? 'prev-' + row.n : ''\">&#8249;</span>"
                         "<span class=\"ticks\" data-if=\"row.shape == 1 && row.ticks.size > 0\">"
                             "<span class=\"tk\" data-for=\"t : row.ticks\" data-class-in=\"t == 1\"></span>"
@@ -95,6 +101,7 @@ namespace oot::ui::rows {
                         "<span class=\"step-gap\" data-if=\"row.shape == 2\"></span>"
                         "<span class=\"act\" data-if=\"row.shape == 3\">{{row.value}}</span>"
                         "<span data-if=\"row.shape == 4\">{{row.value}}</span>"
+                    "</span>"
                     "</span>"
                     "<div class=\"row-note\" data-if=\"row.note != ''\">{{row.note}}</div>"
                 "</div>"
@@ -207,6 +214,52 @@ namespace oot::ui::rows {
         context->Update();
         set(List::Settings, {});
         return failed;
+    }
+
+    bool stacked(float width_px, float dp) {
+        return width_px < oot::ui::tokens::rows_stack_below * dp;
+    }
+
+    std::string to_json(const std::vector<Row>& rows) {
+        nlohmann::json out = nlohmann::json::array();
+        for (const Row& row : rows) {
+            nlohmann::json choices = nlohmann::json::array();
+            for (const Choice& c : row.choices) {
+                choices.push_back({ { "label", c.label }, { "chosen", c.chosen } });
+            }
+            out.push_back({ { "n", row.n }, { "label", row.label }, { "value", row.value }, { "shape", row.shape },
+                            { "low", row.low }, { "high", row.high }, { "on", row.on }, { "note", row.note },
+                            { "section", row.section }, { "icon", row.icon }, { "choices", choices },
+                            { "ticks", row.ticks } });
+        }
+        return out.dump();
+    }
+
+    std::vector<Row> from_json(const std::string& text) {
+        std::vector<Row> rows;
+        const nlohmann::json in = nlohmann::json::parse(text, nullptr, false);
+        if (!in.is_array()) {
+            return rows;
+        }
+        for (const nlohmann::json& r : in) {
+            Row row;
+            row.n = r.value("n", 0);
+            row.label = r.value("label", "");
+            row.value = r.value("value", "");
+            row.shape = r.value("shape", static_cast<int>(Stepper));
+            row.low = r.value("low", false);
+            row.high = r.value("high", false);
+            row.on = r.value("on", false);
+            row.note = r.value("note", "");
+            row.section = r.value("section", "");
+            row.icon = r.value("icon", "");
+            for (const nlohmann::json& c : r.value("choices", nlohmann::json::array())) {
+                row.choices.push_back({ c.value("label", ""), c.value("chosen", false) });
+            }
+            row.ticks = r.value("ticks", std::vector<int>{});
+            rows.push_back(std::move(row));
+        }
+        return rows;
     }
 
     std::string dump_line(const Row& row) {

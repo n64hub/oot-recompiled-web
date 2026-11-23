@@ -306,6 +306,78 @@ input.path-input:focus
 	color: var(--color-dim);
 }
 
+/* THE LABEL AND THE VALUE TOGETHER (the template's .text, ui/models/rows_model.cpp): side by side
+ * in a wide page, the label at the left and the value at the right. */
+.row .text
+{
+	display: flex;
+	flex: 1 1 auto;
+	align-items: center;
+	justify-content: space-between;
+}
+
+/* STACKED IN A NARROW PAGE (the user, 2026-11-20: "icons in one column and then their label and
+ * values stacked rather than side by side", "it also must work and never overlap in every game menu
+ * ui scale size", "maybe scaling down the values a little more"). The shell marks a page narrow
+ * below --rows-stack-below (rows::stacked), which takes in the docked menu at every interface size.
+ * The icon keeps its own column down the row; the label takes a line and the value the line under
+ * it, a step smaller, and a value wider than the row wraps inside it rather than running over the
+ * label. ui_navcheck --rows lays every page's real rows out this way and fails on any overlap. */
+body.narrow .row .text
+{
+	flex-direction: column;
+	align-items: flex-start;
+	justify-content: center;
+}
+
+body.narrow .row .label,
+body.in-shell.narrow .row .label
+{
+	flex: 0 0 auto;
+	margin-right: 0;
+}
+
+/* The value takes the whole width under the label, so its parts (the choices, or the stepper's
+ * arrows, ticks and words) stay on one line beside each other; a value only wraps when that line
+ * is wider than the row (the user, 2026-11-20: "keeping all value options a row and stacking the
+ * label to its own line"). Left to shrink to its content, the box came out a few pixels wide and
+ * every part took a line of its own. */
+body.narrow .row .value
+{
+	display: block;
+	width: 100%;
+	margin-top: var(--space-1);
+	font-size: var(--size-note);
+	white-space: nowrap;
+}
+
+body.narrow .row .value .choices
+{
+	flex-wrap: wrap;
+	max-width: 100%;
+	font-size: var(--size-label);
+	white-space: normal;
+}
+
+body.narrow .row .value .pick
+{
+	margin-left: 0;
+	margin-right: var(--plate-pick-join);
+}
+
+body.narrow .row .value .shown
+{
+	min-width: 0;
+	text-align: left;
+}
+
+/* The left arrow's glyph at the left of its step, under the label's first letter; centered, it
+ * sat a few pixels in from every other row's value. The step keeps its width to click. */
+body.narrow .row .value .step.prev
+{
+	text-align: left;
+}
+
 .row.on .value
 {
 	color: var(--color-lime);
@@ -896,6 +968,18 @@ scrollbarvertical sliderbar
 	margin-bottom: var(--space-2);
 }
 
+/* A notice that something will be lost, in the error red: closing the game with Save on quit off.
+ * Any document can give a block this class. */
+.danger-notice
+{
+	display: block;
+	color: var(--color-danger);
+	background-color: var(--color-danger-wash);
+	border: var(--rule) var(--color-danger-edge);
+	border-radius: var(--radius);
+	padding: var(--space-2) var(--space-3);
+}
+
 /* The frame recorder's plate (the user's ask of 2026-09-22): the counter's plate in the opposite
  * corner. It takes .counter for the whole look and changes only the side it sits on and the
  * things the counter has no use for: a state dot, and a cursor, because unlike the counter this
@@ -1046,14 +1130,27 @@ body.overlay
 {
 	justify-content: flex-start;
 }
+/* The picture keeps its size whatever the words need (the user, 2026-11-20: "the thumbnails here are
+ * squished"); left to shrink, a narrow page pressed it to a sliver. The words share what is left,
+ * grouped as a settings row's are (ui/ui_moment_row.h), so a narrow page stacks them: the name,
+ * the slot's line, then where and when, beside the picture. */
 .row.mrow .thumb
 {
+	flex: 0 0 auto;
 	width: var(--thumb-width);
 	height: var(--thumb-height);
 	margin-right: var(--space-3);
 	border: var(--rule) var(--color-line);
 	border-radius: var(--radius);
 	decorator: none;
+}
+.row.mrow .text
+{
+	min-width: 0;
+}
+body.narrow .row.mrow .value
+{
+	white-space: normal;
 }
 .row.mrow .thumb.empty
 {
@@ -1271,6 +1368,13 @@ body.in-shell .row.acting .value
 	min-width: 0;
 	white-space: normal;
 	text-align: right;
+}
+
+/* Stacked, the words start under the label like every other row's value (the user, 2026-11-20:
+ * "lets align to the left here for this text"); right-aligned, they sat against the row's edge. */
+body.in-shell.narrow .row.acting .value
+{
+	text-align: left;
 }
 
 /* A plate's value holds its parts on one line (the steps, the ticks, the words), at its own width.

@@ -24,6 +24,8 @@
 #include "misc_funcs.h"
 
 #include "environment.h"
+#include "memory_utils.h"
+#include "ocarina.h"
 #include "play_state.h"
 #include "player.h"
 #include "save.h"
@@ -42,6 +44,8 @@ void Play_Update(PlayState* this);
 // The free camera's right stick added to the frame's input in first person and while aiming
 // (patches/free_camera.c).
 void FreeCamera_FirstPersonInput(PlayState* play);
+// Fire while aiming: the ready item's own button, held and pressed for the game (patches/fire_aim.c).
+void FireAim_Input(PlayState* play);
 // Photo mode's camera (patches/photo_mode.c): sets the view while photo mode holds the game.
 void PhotoMode_Update(PlayState* play);
 void Play_Draw(PlayState* this);
@@ -179,8 +183,27 @@ static void Moment_Resume(PlayState* play, s32 slot) {
     play->transitionType = (s16)recomp_warp_transition();
 }
 
+// THE SCARECROW'S TWO SONGS (a player's report of 2026-11-20: after Resume on start the song they
+// had taught the scarecrow was a single A, and playing it never finished). The songs are kept in
+// the save, but the ocarina plays them from its own song table, and the game copies them across
+// only when it opens a file: Sram_OpenSave, each song only when its flag says one was taught. A
+// moment writes the save in without opening a file, so the table kept what it held before, which
+// at start is the table's built-in one note placeholder. This is that copy, after the save block
+// is written, in both resumes.
+static void Moment_OpenScarecrowSongs(void) {
+    if (gSaveContext.save.info.scarecrowLongSongSet) {
+        MemCopy(gScarecrowLongSongPtr, gSaveContext.save.info.scarecrowLongSong,
+                sizeof(gSaveContext.save.info.scarecrowLongSong));
+    }
+    if (gSaveContext.save.info.scarecrowSpawnSongSet) {
+        MemCopy(gScarecrowSpawnSongPtr, gSaveContext.save.info.scarecrowSpawnSong,
+                sizeof(gSaveContext.save.info.scarecrowSpawnSong));
+    }
+}
+
 // The context block and the place, back into the game after the native side wrote the save
-// block: shared by the resume in play and the resume at start.
+// block, and the songs the save carries into the ocarina: shared by the resume in play and the
+// resume at start.
 static void Moment_WriteBack(void) {
     RespawnData* top;
     s32 i;
@@ -217,6 +240,8 @@ static void Moment_WriteBack(void) {
     gSaveContext.skyboxTime = (u16)sMomentPlace.dayTime;
     gSaveContext.save.nightFlag =
         ((u16)sMomentPlace.dayTime > CLOCK_TIME(18, 0) || (u16)sMomentPlace.dayTime < CLOCK_TIME(6, 30)) ? 1 : 0;
+
+    Moment_OpenScarecrowSongs();
 }
 
 // RESUME AT START (phase 78b, the user's ask of 2026-09-24: "open game and immediately load save
@@ -526,6 +551,8 @@ RECOMP_PATCH void Play_Main(GameState* thisx) {
         // @recomp The free camera's right stick joins the left stick's look in first person and
         // while aiming (patches/free_camera.c), on the frame's input, before the update reads it.
         FreeCamera_FirstPersonInput(this);
+        // @recomp Fire while aiming presses the ready item's own button (patches/fire_aim.c).
+        FireAim_Input(this);
         Play_Update(this);
 
         // @recomp The things that moved through the air this update, for the dust they push

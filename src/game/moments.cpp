@@ -554,6 +554,11 @@ namespace oot::moments {
         request_load(newest);
     }
 
+    void skip_resume_on_start() {
+        g_start_resume_done.store(true, std::memory_order_release);
+        std::fprintf(stderr, "[moments] resume on start skipped: this start came from Reset\n");
+    }
+
     int take_boot_load() {
         // Once per launch, whatever comes of it: the console logo asks before its first frame.
         if (g_start_resume_done.exchange(true, std::memory_order_acq_rel)) {

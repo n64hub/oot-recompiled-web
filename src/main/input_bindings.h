@@ -75,6 +75,10 @@ namespace oot::input {
         // The HUD's fading (game/hud.h): brings the HUD back, or fades it, as HUD fades says. The
         // game's own, so the controls screen lists it before the Photo mode section.
         HudToggle,
+        // FIRE WHILE AIMING (the user, 2026-11-22: "set a specific key, button to shoot ... when aiming
+        // ... more like a modern trigger like R2"): while an aimable item is ready, it presses that
+        // item's own button for the game (patches/fire_aim.c). No bit of its own, no default.
+        FireAim,
         Count
     };
     constexpr int INPUT_COUNT = static_cast<int>(GameInput::Count);
@@ -93,7 +97,7 @@ namespace oot::input {
     // keys, the pictures, the video, photo mode itself) in both.
     enum : unsigned { READ_IN_PLAY = 1, READ_IN_PHOTO = 2 };
     constexpr unsigned read_in(GameInput input) {
-        if (input == GameInput::HudToggle) return READ_IN_PLAY;
+        if (input == GameInput::HudToggle || input == GameInput::FireAim) return READ_IN_PLAY;
         if (input == GameInput::PhotoMode) return READ_IN_PLAY | READ_IN_PHOTO;
         if (is_photo_input(input)) return READ_IN_PHOTO;
         if (static_cast<int>(input) >= static_cast<int>(GameInput::Menu)) return READ_IN_PLAY | READ_IN_PHOTO;
@@ -144,11 +148,25 @@ namespace oot::input {
 
     using InputBindings = std::array<std::array<Field, BINDINGS_PER_INPUT>, INPUT_COUNT>;
 
+    // GYRO AIMING (a player's suggestion, 2026-11-22; main/gyro.h): per pad, off until asked for.
+    // At 100% the aim turns as far as the pad turns; the axes are the aiming rows' four choices
+    // (bit 1 inverts left and right, bit 2 up and down).
+    constexpr int MIN_GYRO_SENSITIVITY_PERCENT = 25;
+    constexpr int MAX_GYRO_SENSITIVITY_PERCENT = 400;
+    constexpr int DEFAULT_GYRO_SENSITIVITY_PERCENT = 200;
+    constexpr int GYRO_AXES_COUNT = 4;
+
     struct Profile {
         std::string guid;                  // as SDL prints it, 32 hex digits
         InputBindings bindings{};
         int deadzone_percent = DEFAULT_DEADZONE_PERCENT;
         bool rumble = true;
+        bool gyro = false;
+        // C up's first person looking turned by the pad too, while gyro aiming is on (the user,
+        // 2026-11-22: "a toggle for just the c-up looking ... to also allow gyroscope look").
+        bool gyro_look = false;
+        int gyro_sensitivity_percent = DEFAULT_GYRO_SENSITIVITY_PERCENT;
+        int gyro_axes = 0;
     };
 
     struct Bindings {
@@ -193,6 +211,21 @@ namespace oot::input {
 
     // The profile for a pad, created with the controller defaults on first sight.
     Profile& profile_for(Bindings& bindings, const std::string& guid);
+
+    // THE SAME KEY OR BUTTON ON TWO CONTROLS (the user, 2026-11-22: "could we programmatically detect and
+    // prevent conflicts like this?", the right trigger bound to Fire while aiming while still C down's
+    // second binding). Two slots of one device clash when they hold the same key or button and their
+    // controls are read at the same time (read_in), so one press would do both. Photo mode's camera and
+    // the game's controls never clash, since each is read only while the other is not.
+    struct BindingSlot {
+        GameInput input = GameInput::A;
+        int slot = 0;
+    };
+    // The slots `field` would clash with if bound to `input`'s `slot`.
+    std::vector<BindingSlot> clashes(const InputBindings& map, GameInput input, int slot, const Field& field);
+    // Binds `field` there and takes it off every slot it clashes with, except the keyboard's last Menu
+    // key (the menu must always open); returns the slots it was taken off.
+    std::vector<BindingSlot> bind_moving(InputBindings& map, bool keyboard, GameInput input, int slot, const Field& field);
 
     // --controls-selftest: a file full of every kind of value including garbage is written at
     // `temp_path`, read back, checked against the clamps, saved and read again. Returns 0 on

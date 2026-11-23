@@ -42,7 +42,7 @@
 	width: 100%;
 	height: var(--chrome-bar);
 	box-sizing: border-box;
-	padding: 0 var(--space-3);
+	padding: 0 0 0 var(--space-3);
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -78,32 +78,56 @@
 	display: none;
 }
 
+/* THE WINDOW BUTTONS IN WINDOWS' OWN SHAPE (the user, 2026-11-20: "modfified, branded windows
+ * defaults ... similar to exactly how website lab or developer studio does"): Windows 11's caption
+ * button width, the bar's full height above its rule, flush to the window's top right (the bar has
+ * no right padding), square, in the bar's colors. Windows reports the pointer on them
+ * (main/caption.h): is-hot and is-down are its hover and press, :hover the fallback. */
 .chrome
 {
 	display: flex;
-	align-items: center;
+	align-self: stretch;
 }
 
 .win-btn
 {
-	width: var(--win-btn);
-	height: var(--win-btn);
-	margin-left: var(--rule);
+	width: var(--window-btn-width);
+	height: 100%;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-family: var(--font-display);
-	font-size: var(--size-heading);
-	color: var(--color-dim);
-	border-radius: var(--radius);
-	transition: background-color var(--duration-fast) var(--ease),
-	            color var(--duration-fast) var(--ease);
+	transition: background-color var(--duration-fast) var(--ease);
 }
 
-.win-btn:hover
+.win-btn:hover,
+.win-btn.is-hot
 {
-	color: var(--color-ink);
-	background-color: var(--color-accent-wash);
+	background-color: var(--color-slate-raised);
+}
+
+.win-btn.is-down
+{
+	background-color: var(--color-line);
+}
+
+/* Maximize in full screen, which has nothing to maximize or restore. */
+.win-btn.gone
+{
+	display: none;
+}
+
+#win-close:hover,
+#win-close.is-hot,
+#win-close.is-down
+{
+	background-color: var(--color-error);
+}
+
+#win-close:hover .win-ic,
+#win-close.is-hot .win-ic,
+#win-close.is-down .win-ic
+{
+	image-color: var(--color-on-lime);
 }
 
 /* THE BUTTONS' ICONS ARE THE LAUNCHER'S OWN: minus, square and x from icons/ (Lucide, in the
@@ -114,8 +138,8 @@
  * titlebar not in the laucnher"); as borders, the cross's two rotated bars rasterized differently
  * from each other, one arm thick and whole, the other thin and broken ("looks distorted now").
  * Nudging the bars into line at one size breaks at the next. An icon is drawn smooth at whatever
- * size its box comes out, the same in both directions. The button around it stays the bar's slim
- * --win-btn, so the window's hit test (main/launch.cpp) is unchanged. */
+ * size its box comes out, the same in both directions. While the window is maximized, maximize
+ * shows our own restore glyph (ui/window/restore.svg, two offset squares in the same line). */
 .win-ic
 {
 	width: var(--space-4);
@@ -123,7 +147,8 @@
 	image-color: var(--color-dim);
 }
 
-.win-btn:hover .win-ic
+.win-btn:hover .win-ic,
+.win-btn.is-hot .win-ic
 {
 	image-color: var(--color-ink);
 }

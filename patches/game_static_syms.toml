@@ -45,3 +45,20 @@ symbols = [
     { name = "D_8082AB90", vram = 0x8082AB90 },
     { name = "D_8082AB94", vram = 0x8082AB94 },
 ]
+
+# The player's overlay, the same way.
+[[section]]
+name = "..ovl_player_actor"
+rom = 0x00BCDB70
+vram = 0x808301C0
+size = 0x26560
+
+symbols = [
+    # z_player.c `sControlInput` (Input*): the input the player's code reads this frame, set by
+    # Player_UpdateCommon (the controller's, or all zeros while the player is locked) and read by
+    # func_8084ABD8, the first person look and aim (patches/gyro_aim.c reproduces it for gyro
+    # aiming, 2026-11-22). Read from the recompiled func_8084ABD8: `lui $t6, 0x8085;
+    # lw $t6, 0x6734($t6)`, the pointer its first stick read goes through (`lb $t7, 0x15($t6)`,
+    # rel.stick_y), relocated at the overlay's own offset 0x26574, in its bss past the section.
+    { name = "sControlInput", vram = 0x80856734 },
+]

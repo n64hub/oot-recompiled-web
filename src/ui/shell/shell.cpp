@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
 
 namespace oot::ui::menu {
 
@@ -209,7 +210,24 @@ namespace oot::ui::menu {
             r.close();
             check(!r.holds(), "and so does closing it from any section");
         }
+        {
+            const CloseQuestion keeps = close_question(true);
+            const CloseQuestion loses = close_question(false);
+            check(!keeps.danger && std::string(keeps.detail) == "Your game state is saved on close. No progress will be lost.",
+                  "with Save on quit on, closing says nothing is lost and is no warning");
+            check(loses.danger && std::string(loses.detail).find("Save on quit") != std::string::npos,
+                  "with Save on quit off, closing is a red notice that names Save on quit");
+            check(!second_close_counts(0.0) && !second_close_counts(0.1), "the same click's second event does not close");
+            check(second_close_counts(0.5) && second_close_counts(3.0), "a second press of the close button closes");
+        }
         return ok;
+    }
+
+    CloseQuestion close_question(bool save_on_quit) {
+        if (save_on_quit) {
+            return { "Your game state is saved on close. No progress will be lost.", false };
+        }
+        return { "You have Save on quit disabled, so any unsaved progress will be lost.", true };
     }
 
 }

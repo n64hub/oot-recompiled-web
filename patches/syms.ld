@@ -209,3 +209,12 @@ recomp_hud_targeting = 0x8F000184;
 
 /* 0x8F000188 held the Debugging switches for the arrow and the hookshot (2026-10-21), folded in
    the same day once the user confirmed them; left unused. */
+
+/* Gyro aiming (patches/gyro_aim.c, main/gyro.h; a player's suggestion, 2026-11-22): the turn of the
+   game's pad since the aim last took it, in angle units, packed: heading in the low half, tilt in
+   the high half. Called once a frame while the bow, slingshot, hookshot or boomerang is up. */
+recomp_gyro_aim = 0x8F00018C;
+
+/* Fire while aiming (patches/fire_aim.c, main/input.h; the user, 2026-11-22): the binding's state
+   once a frame, bit 0 held and bit 1 pressed this frame. */
+recomp_fire_aim = 0x8F000190;

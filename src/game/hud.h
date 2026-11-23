@@ -17,7 +17,9 @@
 // The HUD binding (Controls, Tab by default) brings it back, or fades it, as the mode says.
 namespace oot::hud {
 
-    enum Part : int { Hearts = 0, Magic, Rupees, Buttons, Map, PartCount };
+    // The carrots while riding are a part for their fade alone: they sit in no corner, so they keep
+    // the game's own size and place (the user, 2026-11-22).
+    enum Part : int { Hearts = 0, Magic, Rupees, Buttons, Map, Carrots, PartCount };
 
     // What the game is doing this update, from patches/hud_anchoring.c.
     enum Activity : uint32_t {
@@ -59,5 +61,9 @@ namespace oot::hud {
     // THE TARGETING ARROWS (2026-10-13, the HUD menu's Targeting rows): bit 0 set hides the lock-on
     // arrows around what Z holds, bit 1 the marker over what can be targeted.
     uint32_t targeting();
+
+    // The carrots' part on made-up settings: its row reaches its setting, it fades until set to stay
+    // shown without touching the buttons, and the HUD size never sizes it. HUD_SELFTEST_OK or 1.
+    int selftest();
 
 } // namespace oot::hud

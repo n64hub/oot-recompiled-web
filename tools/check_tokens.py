@@ -233,8 +233,42 @@ def unresolved(directory):
     return 0
 
 
+ID_ATTR = re.compile(r'(?<![\w-])id\s*=\s*"([^"]*)"')
+
+
+def duplicate_ids(directory):
+    """Every id in a document names one element. GetElementById returns the first match, so a
+    second element with the same id is never reached: the Controls page's row holder and its foot
+    line shared one (2026-11-22), and writing the version into the foot wiped the deadzone, rumble
+    and reset rows while navigation still stopped on them. Ids a binding builds at runtime
+    (data-attr-id) are not in this list."""
+    problems, checked = [], 0
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".rml"):
+            continue
+        checked += 1
+        raw = io.open(os.path.join(directory, name), encoding="utf-8").read()
+        text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), raw, flags=re.DOTALL)
+        first = {}
+        for match in ID_ATTR.finditer(text):
+            value = match.group(1)
+            number = text.count("\n", 0, match.start()) + 1
+            if value in first:
+                problems.append("%s:%d id '%s' is already used at line %d" % (name, number, value, first[value]))
+            else:
+                first[value] = number
+    for p in problems:
+        print("IDS_FAIL " + p)
+    if problems:
+        return 1
+    print("IDS_OK %d documents" % checked)
+    return 0
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--ids" in sys.argv:
+        sys.exit(duplicate_ids(args[0] if args else "assets/ui"))
     if "--unresolved" in sys.argv:
         sys.exit(unresolved(args[0] if args else "assets/ui"))
     if "--licenses" in sys.argv:

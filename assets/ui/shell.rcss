@@ -63,6 +63,15 @@ body.shell
 	flex-direction: column;
 }
 
+/* THE WINDOW'S BAR OVER THE MENU (the user, 2026-11-20: "the header bar must appear on top of it
+ * and the logo would be pushed down by the height of the window header"). In the game the bar is
+ * drawn above the menu and stays up while it is open; the panel's ground still reaches the top
+ * under the bar, and everything in it starts below the bar. */
+.under-bar .sh-panel
+{
+	padding-top: var(--chrome-bar);
+}
+
 .launcher .sh-panel
 {
 	width: 100%;
@@ -249,22 +258,35 @@ body.shell
 	transition: background-color var(--duration-fast) var(--ease);
 }
 
-.sh-wb:hover
+/* Windows reports the pointer on these, not the interface (main/caption.h): is-hot and is-down
+ * are its hover and press, :hover the fallback when it does not. */
+.sh-wb:hover,
+.sh-wb.is-hot
 {
 	background-color: var(--color-slate-raised);
 }
 
-.sh-wb:hover .win-ic
+.sh-wb.is-down
+{
+	background-color: var(--color-line);
+}
+
+.sh-wb:hover .win-ic,
+.sh-wb.is-hot .win-ic
 {
 	image-color: var(--color-ink);
 }
 
-.sh-close:hover
+.sh-close:hover,
+.sh-close.is-hot,
+.sh-close.is-down
 {
 	background-color: var(--color-error);
 }
 
-.sh-close:hover .win-ic
+.sh-close:hover .win-ic,
+.sh-close.is-hot .win-ic,
+.sh-close.is-down .win-ic
 {
 	image-color: var(--color-on-lime);
 }

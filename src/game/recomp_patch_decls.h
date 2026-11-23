@@ -72,6 +72,10 @@ void recomp_message_assist(uint8_t* rdram, recomp_context* ctx);
 void recomp_low_health_beep(uint8_t* rdram, recomp_context* ctx);
 void recomp_free_camera_stick(uint8_t* rdram, recomp_context* ctx);
 void recomp_free_camera_holds(uint8_t* rdram, recomp_context* ctx);
+// Gyro aiming: the pad's turn since the aim last took it (patches/gyro_aim.c, main/gyro.h).
+void recomp_gyro_aim(uint8_t* rdram, recomp_context* ctx);
+// Fire while aiming: the binding held and pressed this frame (patches/fire_aim.c, main/input.h).
+void recomp_fire_aim(uint8_t* rdram, recomp_context* ctx);
 // The Shadow casters row: how far behind and beside the camera the world stays in the traced
 // scene (0 the game's own culling, 1 near, 2 far, 3 everything).
 void recomp_caster_reach(uint8_t* rdram, recomp_context* ctx);

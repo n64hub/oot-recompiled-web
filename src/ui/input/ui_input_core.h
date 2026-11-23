@@ -63,8 +63,12 @@ namespace oot::ui::input {
     class Stream {
     public:
         using Sink = std::function<void(Action, Device)>;
+        // A held direction let go (not an echo's): the About page sounds once here rather than on
+        // every repeat (the owner, 2026-11-22).
+        using Release = std::function<void(Action)>;
 
-        Stream(Schedule schedule, Sink sink) : schedule_(schedule), sink_(std::move(sink)) {}
+        Stream(Schedule schedule, Sink sink, Release release = {})
+            : schedule_(schedule), sink_(std::move(sink)), release_(std::move(release)) {}
 
         // A source's whole held state at time `now`. A source is one device instance: the
         // keyboard, or a pad by SDL's instance id. A newly held action fires at once; a held
@@ -95,6 +99,7 @@ namespace oot::ui::input {
 
         Schedule schedule_;
         Sink sink_;
+        Release release_;
         Echoes echoes_;
         std::map<int, Source> sources_;
         Device last_ = Device::Keyboard;

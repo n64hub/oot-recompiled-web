@@ -2,9 +2,11 @@
 #include "game/hud.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <mutex>
 
 #include "game/moments.h"
@@ -35,8 +37,13 @@ namespace oot::hud {
         // The button's own state: in Always, the HUD shown; in By button, the HUD faded.
         bool g_button_on = false;
         std::atomic<bool> g_button_pressed{ false };
-        float g_opacity[PartCount] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
-        float g_color[PartCount] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+        constexpr std::array<float, PartCount> full() {
+            std::array<float, PartCount> all{};
+            all.fill(1.0f);
+            return all;
+        }
+        std::array<float, PartCount> g_opacity = full();
+        std::array<float, PartCount> g_color = full();
 
         int step(int value, int count) {
             return std::clamp(value, 0, count - 1);
@@ -49,6 +56,7 @@ namespace oot::hud {
                 case Rupees:  return s.hud_fade_rupees == 0;
                 case Buttons: return s.hud_fade_buttons == 0;
                 case Map:     return s.hud_fade_map == 0;
+                case Carrots: return s.hud_fade_carrots == 0;
                 default:      return false;
             }
         }
@@ -158,21 +166,58 @@ namespace oot::hud {
         }
     }
 
-    uint32_t layout(int p) {
-        constexpr uint32_t SIZE_PERCENT[] = { 50, 60, 70, 80, 90, 100, 115, 130, 150, 175, 200 };
-        const oot::ui::Settings& s = oot::ui::settings();
-        int size = s.hud_size;
-        if (s.hud_sizes != 0) {
-            switch (p) {
-                case Hearts:  size = s.hud_size_hearts; break;
-                case Magic:   size = s.hud_size_magic; break;
-                case Rupees:  size = s.hud_size_rupees; break;
-                case Buttons: size = s.hud_size_buttons; break;
-                case Map:     size = s.hud_size_map; break;
-                default:      break;
+    namespace {
+        uint32_t layout_for(const oot::ui::Settings& s, int p) {
+            constexpr uint32_t SIZE_PERCENT[] = { 50, 60, 70, 80, 90, 100, 115, 130, 150, 175, 200 };
+            if (p == Carrots) {
+                return 100;   // centered, in no corner to grow from: the game's own size
             }
+            int size = s.hud_size;
+            if (s.hud_sizes != 0) {
+                switch (p) {
+                    case Hearts:  size = s.hud_size_hearts; break;
+                    case Magic:   size = s.hud_size_magic; break;
+                    case Rupees:  size = s.hud_size_rupees; break;
+                    case Buttons: size = s.hud_size_buttons; break;
+                    case Map:     size = s.hud_size_map; break;
+                    default:      break;
+                }
+            }
+            return SIZE_PERCENT[step(size, 11)];
         }
-        return SIZE_PERCENT[step(size, 11)];
+    } // namespace
+
+    uint32_t layout(int p) {
+        return layout_for(oot::ui::settings(), p);
+    }
+
+    int selftest() {
+        int failures = 0;
+        const auto expect = [&failures](bool ok, const char* what) {
+            if (!ok) {
+                std::fprintf(stderr, "HUD_SELFTEST_FAILED: %s\n", what);
+                ++failures;
+            }
+        };
+        oot::ui::Settings s{};
+        oot::ui::clamp(s);
+        const int row = oot::ui::row_index("hudfadecarrots");
+        expect(row >= 0, "the Carrots row is not in the settings table");
+        expect(part_fades(s, Carrots), "the carrots stay shown before their row says so");
+        oot::ui::set_row(s, row, 1);
+        expect(s.hud_fade_carrots == 1, "the Carrots row does not reach its setting");
+        expect(!part_fades(s, Carrots), "Stay shown did not keep the carrots shown");
+        expect(part_fades(s, Buttons), "the carrots' row kept the buttons shown");
+        s.hud_fade_buttons = 1;
+        s.hud_fade_carrots = 0;
+        expect(part_fades(s, Carrots), "the buttons' row kept the carrots shown");
+        s.hud_size = 0;
+        expect(layout_for(s, Carrots) == 100 && layout_for(s, Hearts) == 50, "the HUD size sized the carrots");
+        if (failures != 0) {
+            return 1;
+        }
+        std::printf("HUD_SELFTEST_OK\n");
+        return 0;
     }
 
     uint32_t place() {

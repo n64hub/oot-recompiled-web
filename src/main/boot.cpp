@@ -42,12 +42,15 @@
 #include "game/render.h"
 #include "main/boot.h"
 #include "game/texture_packs.h"
+#include "main/gyro.h"
 #include "main/places.h"
 #include "main/recorder.h"
+#include "main/reset.h"
 #include "main/rom_source.h"
 #include "main/screenshots.h"
 #include "main/updates.h"
 #include "game/moments.h"
+#include "main/caption.h"
 #include "main/input.h"
 #include "main/input_bindings.h"
 #include "main/launch.h"
@@ -98,6 +101,8 @@ namespace {
     // --play: straight into the game with no launcher, which is how the harness runs and how
     // anyone who never wants the launcher can run.
     bool g_play_now = false;
+    // A direct start's window mode, held until its window is shown (run, below).
+    bool g_mode_held_until_shown = false;
     bool g_open_files = false;
 
     std::atomic<int> g_window_width{ 0 };
@@ -406,14 +411,16 @@ namespace {
         if (key_bound_down(keys, *bindings, GameInput::StickLeft))  *x -= 1.0f;
 
         // The first pad drives the same player. Its buttons join the keyboard's, and its stick
-        // takes over whenever it is deflected past its deadzone, since a pad's range is the one
-        // that carries walking as well as running.
+        // takes over whenever it is off its rest, since a pad's range is the one that carries
+        // walking as well as running.
+        namespace devices = oot::input::devices;
         uint16_t pad_buttons = 0;
         float pad_x = 0.0f;
         float pad_y = 0.0f;
-        if (oot::input::devices::read_pad(0, &pad_buttons, &pad_x, &pad_y)) {
+        float pad_band = 0.0f;
+        if (devices::read_pad(0, &pad_buttons, &pad_x, &pad_y, &pad_band)) {
             *buttons |= pad_buttons;
-            if (pad_x != 0.0f || pad_y != 0.0f) {
+            if (devices::pad_takes_stick(*x, *y, pad_x, pad_y, pad_band)) {
                 *x = pad_x;
                 *y = pad_y;
             }
@@ -426,28 +433,16 @@ namespace {
         // item"). The game is given nothing while a menu is open, so a button still down as the menu
         // closes on it reads as a fresh press on the game's next frame. Whatever is down when a menu
         // has let go (the shell's count moved) is held back until it is released, each button on its
-        // own, and the stick until it is back in the middle. The game is held while the menu is open
-        // and may read nothing in between, which is why it is a count and not this function watching.
+        // own, and the stick until it is back at rest (devices::hold_back). The game is held while
+        // the menu is open and may read nothing in between, which is why it is a count and not this
+        // function watching.
         static uint32_t s_releases_seen = oot::ui::shell::capture_releases();
-        static uint16_t s_held_back = 0;
-        static bool s_stick_held_back = false;
+        static devices::HeldBack s_held_back;
         const uint32_t releases = oot::ui::shell::capture_releases();
-        const bool photo_ended = s_photo_was;
+        const bool let_go = (releases != s_releases_seen) || s_photo_was;
+        s_releases_seen = releases;
         s_photo_was = false;
-        if ((releases != s_releases_seen) || photo_ended) {
-            s_releases_seen = releases;
-            s_held_back = *buttons;
-            s_stick_held_back = (*x != 0.0f || *y != 0.0f);
-        }
-        s_held_back &= *buttons;   // a button let go is the game's again
-        *buttons &= static_cast<uint16_t>(~s_held_back);
-        if (s_stick_held_back) {
-            if (*x == 0.0f && *y == 0.0f) {
-                s_stick_held_back = false;
-            }
-            *x = 0.0f;
-            *y = 0.0f;
-        }
+        devices::hold_back(s_held_back, let_go, pad_band, buttons, x, y);
 
         return true;
     }
@@ -711,19 +706,15 @@ namespace {
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
                 case SDL_QUIT:
-                    if (!oot::moments::on_quit_requested(oot::launch::game_started())) {
-                        ultramodern::quit();
-                    }
+                    // Alt+F4 and Windows' own close: in play "Close Game?" first, then Save on quit
+                    // (phase 78b), the same way as the close button and the menu's Quit.
+                    oot::launch::request_close();
                     break;
 
                 case SDL_WINDOWEVENT:
                     if (ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                         ev.window.windowID == SDL_GetWindowID(g_window)) {
-                        // Save on quit (phase 78b): the close button keeps a moment first when
-                        // the row asks; the pump below quits once it has landed.
-                        if (!oot::moments::on_quit_requested(oot::launch::game_started())) {
-                            ultramodern::quit();
-                        }
+                        oot::launch::request_close();
                     }
                     else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
                         // A key held as the window lost focus never sends its key up here.
@@ -823,6 +814,11 @@ namespace {
                     oot::input::devices::handle_event(ev);
                     break;
 
+                case SDL_CONTROLLERSENSORUPDATE:
+                    // A pad's gyroscope or accelerometer, summed for gyro aiming (main/gyro.h).
+                    oot::input::gyro::on_sensor(ev.csensor);
+                    break;
+
                 case SDL_DROPFILE:
                     // A file dropped on the window is a ROM offered to the launcher. SDL hands
                     // the path out as memory it expects back.
@@ -854,6 +850,10 @@ namespace {
         // the settings' window mode through.
         if (oot::launch::tick()) {
             oot::launch::shape_for_game();
+            oot::ui::hold_window_mode(false);
+        }
+        if (g_mode_held_until_shown && oot::launch::window_shown()) {
+            g_mode_held_until_shown = false;
             oot::ui::hold_window_mode(false);
         }
         // Whether the window is fullscreen right now, for the frame: no edge to draw there.
@@ -1318,6 +1318,13 @@ void oot::boot::run(SDL_Window* window,
         else if (arg == "--play") {
             g_play_now = true;
         }
+        // A start that came from Reset (main/reset.h): main waited for the old copy already; the
+        // game opens from its beginning, so Resume on start sits this one start out.
+        else if (arg == "--reset-from" && i + 1 < argc) {
+            ++i;
+            g_play_now = true;
+            oot::moments::skip_resume_on_start();
+        }
         // Windows runs this when somebody picks Uninstall in its installed apps list, and the
         // launcher's own Your files row reaches the same surface. It is NOT a silent removal:
         // the program comes up on that surface with the real paths listed and a button that has
@@ -1330,8 +1337,23 @@ void oot::boot::run(SDL_Window* window,
             // Exercise the bindings file without the game and exit with its verdict: 0 when a
             // file full of every kind of value, garbage included, reads back clamped, round trips,
             // and a missing file is the defaults. The scratch file is written beside the
-            // executable and removed.
-            std::exit(oot::input::selftest((oot::launch::executable_directory() / "controls.selftest.txt").string()));
+            // executable and removed. Then the stick's rest and the hold after a menu, on made up
+            // readings (main/input.h).
+            const int bindings = oot::input::selftest((oot::launch::executable_directory() / "controls.selftest.txt").string());
+            const int verdict = (bindings != 0) ? bindings : oot::input::devices::stick_selftest();
+            if (verdict == 0) {
+                std::printf("CONTROLS_SELFTEST_OK\n");
+            }
+            std::exit(verdict);
+        }
+        else if (arg == "--caption-selftest") {
+            // The window buttons as Windows sees them (main/caption.h), through a hidden window
+            // that is never shown.
+            const int verdict = oot::caption::selftest();
+            if (verdict == 0) {
+                std::printf("CAPTION_SELFTEST_OK\n");
+            }
+            std::exit(verdict);
         }
         else if (arg == "--moments-selftest") {
             // The saved moments' slot table and the moves into and out of the reserved, on
@@ -1342,6 +1364,22 @@ void oot::boot::run(SDL_Window* window,
             // The ROM check against the user's own ROM, in memory (rom_source.h): it tells this
             // game from another revision and from another game by the header name's hash.
             std::exit(oot::rom::selftest(argv[++i], oot::game_entry()));
+        }
+        else if (arg == "--rom-details-selftest") {
+            // The header reader the launcher's ROM row shows (rom_source.h), on made-up headers.
+            std::exit(oot::rom::details_selftest());
+        }
+        else if (arg == "--reset-selftest") {
+            // Reset's flag, its command and its wait on a real copy of this program (reset.h).
+            std::exit(oot::reset::selftest());
+        }
+        else if (arg == "--hud-selftest") {
+            // The HUD's carrots part and its row (game/hud.h), on made-up settings.
+            std::exit(oot::hud::selftest());
+        }
+        else if (arg == "--gyro-selftest") {
+            // Gyro aiming's sum, its settings and its stale rule, on made-up readings (gyro.h).
+            std::exit(oot::input::gyro::selftest());
         }
         else if (arg == "--ui-fonts-selftest") {
             // The interface's three bundled faces read with FreeType, no window and no RmlUi:
@@ -1360,6 +1398,11 @@ void oot::boot::run(SDL_Window* window,
             // What every rows document says, from the tables alone, to the file named: the proof
             // that a change to how rows are drawn changes nothing they say (menus plan, phase 95).
             std::exit(oot::ui::shell::dump_rows(argv[++i]));
+        }
+        else if (arg == "--ui-rows-json" && i + 1 < argc) {
+            // Every rows page's real rows, for ui_navcheck --rows, which lays them out at every
+            // interface size and fails on any overlap.
+            std::exit(oot::ui::shell::dump_rows_json(argv[++i]));
         }
         else if (arg == "--registry-selftest") {
             // Exercise the actor registry without the game and exit with its verdict: 0 when
@@ -1406,8 +1449,13 @@ void oot::boot::run(SDL_Window* window,
         oot::launch::hold_window_hidden();
     }
     else {
+        // A direct start (--play, and Reset's start again) is held the same way, its window mode
+        // too, until the game's first frame is drawn (the user, 2026-11-22: Reset showed two black,
+        // plainly framed windows before the game). Shown, it takes the settings' mode (pump below).
         oot::launch::shape_for_game();
-        SDL_ShowWindow(window);
+        oot::ui::hold_window_mode(true);
+        oot::launch::hold_window_hidden();
+        g_mode_held_until_shown = true;
     }
 
     if (g_play_now) {

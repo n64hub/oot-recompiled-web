@@ -21,6 +21,7 @@
 #include <cstring>
 #include <vector>
 
+#include "main/gyro.h"
 #include "game/actor_registry.h"
 #include "game/actor_room.h"
 #include "game/camera_cuts.h"
@@ -216,6 +217,25 @@ extern "C" void recomp_free_camera_stick(uint8_t* rdram, recomp_context* ctx) {
     oot::input::devices::read_right_stick(0, &x, &y);
     const float axis = (_arg<0, int32_t>(rdram, ctx) == 0) ? x : y;
     ctx->r2 = static_cast<gpr>(static_cast<int64_t>(static_cast<int32_t>(std::lround(axis * 4096.0f))));
+}
+
+// GYRO AIMING (patches/gyro_aim.c, main/gyro.h): the game's pad's turn since the aim last took it,
+// heading in the low sixteen bits and tilt in the high sixteen, each a signed angle in the game's
+// units, so one call a frame carries both.
+extern "C" void recomp_gyro_aim(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    // Its argument: 1 while looking around with C up, 0 while aiming an item.
+    const oot::input::gyro::Aim aim = oot::input::gyro::take_aim(_arg<0, int32_t>(rdram, ctx) != 0);
+    const uint32_t packed = (static_cast<uint32_t>(static_cast<uint16_t>(aim.pitch)) << 16) |
+                            static_cast<uint16_t>(aim.yaw);
+    ctx->r2 = static_cast<gpr>(static_cast<int64_t>(static_cast<int32_t>(packed)));
+}
+
+// FIRE WHILE AIMING (patches/fire_aim.c, main/input.h): bit 0 while the binding is held, bit 1 on
+// the frame it is pressed. Asked once a frame.
+extern "C" void recomp_fire_aim(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    ctx->r2 = static_cast<gpr>(oot::input::devices::fire_aim());
 }
 
 extern "C" void recomp_free_camera_holds(uint8_t* rdram, recomp_context* ctx) {

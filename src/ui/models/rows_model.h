@@ -17,6 +17,7 @@
 // The ids the shell's clicks and focus read (row-N, prev-N, next-N) come from `n`, the row's place
 // in its screen's order, exactly as the string builders made them.
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -59,8 +60,36 @@ namespace oot::ui::rows {
         std::vector<int> ticks;
     };
 
-    // One list per rows document.
-    enum class List { Launch, Settings, Lighting, Hud, Debug };
+    // HOW A STEPPED VALUE IS DRAWN (phase 100, the decision's plates): a short set of short options
+    // side by side, every one shown and the one in force lit (Windowed and Fullscreen; Off, 2x, 4x,
+    // 8x); a longer set as a tick per option beside the option's words; past a dozen, the words
+    // alone. `label` gives option i's words, or null for a number. Every stepped row, the settings
+    // pages' and the Controls page's, is drawn by this one rule.
+    template <typename Label>
+    void draw_options(Row& row, int count, int number, Label label) {
+        constexpr int MOST_SIDE_BY_SIDE = 4;
+        constexpr size_t LONGEST_SIDE_BY_SIDE = 11;
+        constexpr int MOST_TICKS = 12;
+        bool short_words = count >= 2 && count <= MOST_SIDE_BY_SIDE;
+        for (int i = 0; short_words && i < count; ++i) {
+            const char* words = label(i);
+            short_words = words != nullptr && std::strlen(words) <= LONGEST_SIDE_BY_SIDE;
+        }
+        if (short_words) {
+            for (int i = 0; i < count; ++i) {
+                row.choices.push_back({ label(i), i == number });
+            }
+        }
+        else if (count >= 2 && count <= MOST_TICKS) {
+            for (int i = 0; i < count; ++i) {
+                row.ticks.push_back(i == number ? 1 : 0);
+            }
+        }
+    }
+
+    // One list per rows document; the Controls page has two, its device row above the bindings
+    // and a pad's deadzone, rumble and reset below them (ui_controls.h, top_views and foot_views).
+    enum class List { Launch, Settings, Lighting, Hud, Debug, ControlsTop, ControlsFoot };
 
     // Creates the model in the context, before any rows document loads.
     bool create(Rml::Context* context);
@@ -79,6 +108,17 @@ namespace oot::ui::rows {
 
     // One row as one line of text, every field, for the rows dump (--ui-rows-dump).
     std::string dump_line(const Row& row);
+
+    // THE ROW STACKED IN A NARROW PAGE (the user, 2026-11-20: "icons in one column and then their
+    // label and values stacked rather than side by side", "it also must work and never overlap in
+    // every game menu ui scale size"). Whether a page this many pixels wide, at this interface
+    // scale, draws its rows' label and value one over the other: narrower than --rows-stack-below.
+    // The shell sets the page's `narrow` class by it, and ui_navcheck lays the rows out by it.
+    bool stacked(float width_px, float dp);
+
+    // A screen's rows as JSON text and back, every field (--ui-rows-json and ui_navcheck --rows).
+    std::string to_json(const std::vector<Row>& rows);
+    std::vector<Row> from_json(const std::string& text);
 
     // The template against the real RmlUi, no window (ui_navcheck): a row of every shape, drawn,
     // its ids, classes and words as the string builders made them; a row taken away goes. Creates

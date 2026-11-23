@@ -1,8 +1,10 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "main/input_bindings.h"
+#include "ui/models/rows_model.h"
 
 // The controls document's model: the rows it shows for the device it is showing, and the
 // actions the shell applies to them. It reads and writes the bindings through
@@ -12,7 +14,7 @@
 // which is swapped whole, and the file, which one writer holds at a time.
 namespace oot::ui::controls {
 
-    enum class RowKind { Device, Binding, Deadzone, Rumble, Reset };
+    enum class RowKind { Device, Binding, Deadzone, GyroAim, GyroLook, GyroSensitivity, GyroAxes, Rumble, Reset };
 
     struct Row {
         RowKind kind = RowKind::Binding;
@@ -92,10 +94,33 @@ namespace oot::ui::controls {
     // the change is saved. Returns true when something changed.
     bool nudge(int index, int direction);
 
+    // THE ROWS THAT ARE NOT BINDINGS, drawn by the settings rows' template (rows_model.h) so they
+    // look and step as a settings row does (the user, 2026-11-21: "they need to look and use the
+    // same control styles as the settings page"): the device above the bindings, and a pad's stick
+    // deadzone and rumble and the reset below them. Each row's n is its index here, so its row-,
+    // prev-, next- and pick- ids name the row nudge and the shell's clicks take.
+    std::vector<rows::Row> top_views();
+    std::vector<rows::Row> foot_views();
+
+    // The same rows from given values, for the rows dump the layout check reads.
+    rows::Row device_view(int n, const std::string& name, int device, int count);
+    rows::Row deadzone_view(int n, int percent);
+    // GYRO AIMING (main/gyro.h), for a pad with a gyroscope: on or off, and while on Gyro look (C up's
+    // looking turned too), its sensitivity and its axes.
+    rows::Row gyro_view(int n, bool on);
+    rows::Row gyro_look_view(int n, bool on);
+    rows::Row gyro_sensitivity_view(int n, int percent);
+    rows::Row gyro_axes_view(int n, int axes);
+    rows::Row rumble_view(int n, bool on, bool motor);
+    rows::Row reset_view(int n);
+
     // Enter on a binding row arms the device layer's capture for that slot: the next press on
     // this device binds it, and the device layer saves. False for the other rows.
     bool begin_capture(int index, int slot);
     std::string capture_title(int index, int slot);
+    // After a capture binds: "Bound to <name>", and the controls the key or button was taken off so
+    // no press does two things (the user, 2026-11-22), as ", taken off C down".
+    std::string bound_line(int index, int slot);
 
     // Delete on a binding row. The menu input keeps its last keyboard binding, so the
     // application can always be reached; false says the clear was refused for that reason.

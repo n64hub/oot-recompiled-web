@@ -73,6 +73,10 @@ body
 	--color-light: var(--color-gold);
 	--color-on-light: var(--color-on-gold);
 	--color-danger: var(--color-error);
+	/* A warning that loses something (the owner, 2026-11-22: "semtransparent bg and slightly less
+	 * transparent border, and solid red text"): the error red at 15% behind it and 45% round it. */
+	--color-danger-wash: #f75e5426;
+	--color-danger-edge: #f75e5473;
 	--letterbox: #000000;
 
 	/* ---------------------------------------------------------------------------------------
@@ -209,7 +213,10 @@ body
 	--host-side-docked: 34dp;
 	--host-side-cut: 96dp;
 	--host-bottom: 18dp;
-	--window-btn-width: 44dp;
+	/* A page narrower than this stacks its rows' label and value (rows::stacked). */
+	--rows-stack-below: 720dp;
+	/* The window buttons in both bars: Windows 11's caption button width (main/caption.h). */
+	--window-btn-width: 46dp;
 	--window-btn-height: 38dp;
 	--held-size: 84dp;
 	/* The medallion's drawing is 200 by 190 (--md-size and --md-height), so 84 across is 79.8 tall. */
@@ -370,7 +377,6 @@ body
 	--gold-deep: #967600;
 	--mark-w: 18dp;
 	--mark-h: 15dp;
-	--win-btn: 22dp;
 	--chrome-bar: 30dp;
 	--plate-top-under-bar: 41dp;
 	--dot: 9dp;

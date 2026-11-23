@@ -70,6 +70,7 @@ namespace oot::ui::shell_model {
         model.Bind("title", &g_state.title);
         model.Bind("version", &g_state.version);
         model.Bind("held", &g_state.held);
+        model.Bind("bar", &g_state.bar);
         model.Bind("sections", &g_state.sections);
         model.Bind("prompts", &g_state.prompts);
         g_state.pins.assign(PIN_SLOTS, Prompt{});
@@ -97,6 +98,7 @@ namespace oot::ui::shell_model {
         mark(next.title != g_state.title, "title");
         mark(next.version != g_state.version, "version");
         mark(next.held != g_state.held, "held");
+        mark(next.bar != g_state.bar, "bar");
         mark(!same(next.sections, g_state.sections), "sections");
         mark(!same(next.prompts, g_state.prompts), "prompts");
         mark(!same(next.pins, g_state.pins), "pins");

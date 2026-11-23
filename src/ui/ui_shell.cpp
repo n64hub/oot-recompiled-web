@@ -14,6 +14,11 @@
 #include "ui/ui_render.h"
 #include "ui/ui_settings.h"
 #include "ui/ui_lighting.h"
+#include "main/caption.h"
+#include "ui/ui_survey.h"
+#include "ui/ui_markup.h"
+#include "ui/ui_moment_row.h"
+#include "ui/ui_text_row.h"
 #include "ui/ui_system.h"
 #include "ui/models/rows_model.h"
 #include "ui/models/shell_model.h"
@@ -81,7 +86,7 @@ namespace {
 
     struct Command {
         enum class Kind {
-            Open, Close, Toggle, Nav, Activity, MouseMove, MouseButton, MouseWheel,
+            Open, Close, Toggle, Nav, NavRelease, AskClose, Activity, MouseMove, MouseButton, MouseWheel,
             Text, Key, TextAccept, TextEscape, BrowsePath
         } kind;
         oot::ui::shell::Screen screen = oot::ui::shell::Screen::None;
@@ -101,6 +106,8 @@ namespace {
     // mutex guards: a stale answer for one frame is harmless, a stall on the game thread is not.
     std::atomic<bool> g_capturing{ false };
     std::atomic<uint32_t> g_capture_releases{ 0 };
+    // The documents are loaded and drawing, so a question can be put on screen (post_ask_close).
+    std::atomic<bool> g_ready{ false };
 
     // Whether the ROM browser's path field has the focus, read by the pump to route the keys.
     std::atomic<bool> g_text_entry{ false };
@@ -129,6 +136,7 @@ namespace {
     namespace controls = oot::ui::controls;
     namespace devices = oot::input::devices;
     namespace launch = oot::launch;
+    namespace caption = oot::caption;
     namespace warps = oot::ui::warps;
 
     std::string g_assets_dir;
@@ -226,8 +234,9 @@ namespace {
     // About's scrolling body: a smaller share, since its case also holds a prose lid and a foot,
     // and the case's own limit is 78% of the window (tokens.rcss).
     constexpr float ABOUT_SHARE = 0.50f;
-    // One press of up or down in About, in pixels.
-    constexpr float ABOUT_SCROLL_STEP = 48.0f;
+    // One press of up or down in About, in dp so it keeps its length at every resolution and
+    // Interface size (the owner, 2026-11-22: further per press; it was 48 pixels).
+    constexpr float ABOUT_SCROLL_STEP_DP = 80.0f;
 
     // The ROM browser.
     std::filesystem::path g_browse_dir;   // empty is the drives
@@ -347,22 +356,8 @@ namespace {
         return doc;
     }
 
-    // Text into a document goes through here: RmlUi reads RML, so a name that happens to hold
-    // an ampersand or an angle bracket (a pad's name is whatever its maker wrote, a file's name
-    // is whatever the user typed) has to be escaped or it would be parsed as markup.
-    std::string escape(const std::string& text) {
-        std::string out;
-        out.reserve(text.size());
-        for (const char c : text) {
-            switch (c) {
-                case '&':  out += "&amp;"; break;
-                case '<':  out += "&lt;"; break;
-                case '>':  out += "&gt;"; break;
-                default:   out += c; break;
-            }
-        }
-        return out;
-    }
+    // Text into a document goes through here (ui/ui_markup.h).
+    using oot::ui::markup::escape;
 
     void set_text(Rml::ElementDocument* doc, const std::string& id, const std::string& text) {
         if (doc == nullptr) {
@@ -439,6 +434,8 @@ namespace {
     // prefixes. Declared here because the row kinds are defined further down.
     void click_action(const std::string& id);
     void click_step(const std::string& id);
+    void reflect_controls();
+    void apply_controls_focus();
     void click_pick(const std::string& id);
     void click_files(const std::string& id);
     void click_moments(const std::string& id);
@@ -472,6 +469,7 @@ namespace {
     void hide_row(Rml::ElementDocument* doc, int row, const char* prefix);
     void show(Screen screen);
     void handle_nav(Nav nav);
+    void handle_nav_release(Nav nav);
     void click_section(const std::string& id);
     void click_prompt(const std::string& id);
     void click_key(const std::string& id);
@@ -484,6 +482,8 @@ namespace {
     // The two warnings the user asked for on 2026-09-26. Declared here because they are raised
     // from the row handlers well above the confirmation machinery they are built on.
     void confirm_debugging(Screen back);
+    void confirm_reset(Screen back);
+    void confirm_close();
     bool recorder_needs_warning(int row, int wanted);
     void confirm_recorder(int row, Screen back);
 
@@ -667,18 +667,21 @@ namespace {
     // scrolls up on setting change?"). Hence size_rows, which is whatever the caller does to the
     // list's own height, running BETWEEN the rows and the layout: it changes the geometry the
     // scroll is about to be clamped against.
+    // `scroller` is what scrolls when the rows are one part of it (the Controls page's bindings,
+    // between the template's rows); the rows themselves when it is null.
     void replace_rows(Rml::ElementDocument* doc, Rml::Element* rows, const std::string& rml,
-                      const std::function<void()>& size_rows = nullptr) {
+                      const std::function<void()>& size_rows = nullptr, Rml::Element* scroller = nullptr) {
         if (doc == nullptr || rows == nullptr) {
             return;
         }
-        const float scroll_top = rows->GetScrollTop();
+        Rml::Element* scrolled = scroller != nullptr ? scroller : rows;
+        const float scroll_top = scrolled->GetScrollTop();
         rows->SetInnerRML(rml);
         if (size_rows) {
             size_rows();
         }
         doc->UpdateDocument();
-        rows->SetScrollTop(scroll_top);
+        scrolled->SetScrollTop(scroll_top);
     }
 
     void size_long_rows(Rml::ElementDocument* doc, const char* id, float share = ROWS_SHARE) {
@@ -769,8 +772,8 @@ namespace {
     // in the settings that opens it, LightingReset the sub menu's last row (2026-09-24).
     // LightingSweep is the sub menu's harness row: every option of every row captured in turn
     // (main/sweep.h, the user's ask of 2026-09-24).
-    enum class RowKind { Setting, Rom, Controls, Files, Moments, Debug, Play, Quit, Lighting, LightingMenu, LightingReset, LightingSweep, Warps, TimeOfDay, Piece, HudMenu,
-                         CapturePhoto, CaptureVideo };
+    enum class RowKind { Setting, Rom, Controls, Files, Moments, Debug, Play, Quit, GameReset, Lighting, LightingMenu, LightingReset, LightingSweep, Warps, TimeOfDay,
+                         Piece, HudMenu, CapturePhoto, CaptureVideo };
 
     struct RowSpec {
         RowKind kind = RowKind::Setting;
@@ -915,6 +918,7 @@ namespace {
                 add("hudfaderupees");
                 add("hudfadebuttons");
                 add("hudfademap");
+                add("hudfadecarrots");
             }
             // The size: one for the whole HUD, or each part its own (2026-10-09).
             add("hudsizes");
@@ -1026,7 +1030,7 @@ namespace {
             }
         };
         if (screen == Screen::Graphics) {
-            for (const char* key : { "window", "resolution", "downsampling", "aspect", "antialiasing", "renderdistance",
+            for (const char* key : { "window", "alwaysontop", "resolution", "downsampling", "aspect", "antialiasing", "renderdistance",
                                      "framerate", "counter", "texturepack" }) {
                 add(key);
             }
@@ -1106,6 +1110,9 @@ namespace {
         // no menu at all.
         if (g_game_started) {
             rows.push_back(RowSpec{ RowKind::Debug, 0 });
+            // RESET, IN PLAY ONLY, beside Quit (the user, 2026-11-22: the Play section it was put in
+            // is the launcher's alone, so the in-game menu never showed it).
+            rows.push_back(RowSpec{ RowKind::GameReset, 0 });
         }
 #ifdef __EMSCRIPTEN__
         // No Quit on a page: there is nothing to quit to, and a program that has exited leaves the
@@ -1273,28 +1280,51 @@ namespace {
 
     int g_focus = 0;
 
+    // "USA (NTSC-U) 1.0" from the header, or empty when the file is not a ROM to say.
+    std::string rom_edition(const launch::RomStatus& s) {
+        return s.region.empty() ? std::string() : s.region + " " + s.version;
+    }
+
+    // What the header says, in one line: its title (from the user's own file), region, version
+    // and byte order, leaving out what it cannot say.
+    std::string rom_facts(const launch::RomStatus& s) {
+        std::string facts = s.title;
+        const auto add = [&facts](const std::string& part) {
+            if (!part.empty()) {
+                facts += facts.empty() ? part : ", " + part;
+            }
+        };
+        add(s.region);
+        add(s.version.empty() ? std::string() : "version " + s.version);
+        add(s.format.empty() ? std::string() : s.format + " format");
+        return facts;
+    }
+
     std::string rom_value() {
         const launch::RomStatus s = launch::rom_status();
+        const std::string edition = rom_edition(s);
         switch (s.state) {
-            case launch::RomState::Stored:   return "Ready, from where you keep it";
+            case launch::RomState::Stored:
             case launch::RomState::Beside:
-            case launch::RomState::Accepted: return shorten(s.name, 34);
-            case launch::RomState::Refused:  return "Refused";
+            case launch::RomState::Accepted: return shorten("Valid, " + edition, 34);
+            case launch::RomState::Refused:  return shorten(edition.empty() ? "Refused" : "Refused, " + edition, 34);
             default:                         return "Not found";
         }
     }
 
     std::string rom_note() {
         const launch::RomStatus s = launch::rom_status();
+        const std::string facts = rom_facts(s);
         switch (s.state) {
             case launch::RomState::Stored:
-                return "Reading the file you chose last time, where you left it. Enter on the ROM row chooses another";
+                return s.name + ", chosen last time and read where you left it: " + facts +
+                       ". Enter on the ROM row chooses another";
             case launch::RomState::Beside:
-                return "Found beside the program and accepted: " + s.name;
+                return s.name + ", found beside the program: " + facts + ". It matches the version this program runs";
             case launch::RomState::Accepted:
-                return "Accepted: " + s.name;
+                return s.name + ": " + facts + ". It matches the version this program runs";
             case launch::RomState::Refused:
-                return s.name + " was refused: " + s.detail + ". Choose another";
+                return s.name + " was refused: " + s.detail + (facts.empty() ? "" : " (" + facts + ")") + ". Choose another";
             default:
                 return "No ROM found beside the program. Drop the file on the window, or Enter on the ROM row to browse";
         }
@@ -1337,7 +1367,7 @@ namespace {
     const char* row_icon(const char* key) {
         static const std::pair<const char*, const char*> TABLE[] = {
             // Settings
-            { "window", "app-window" }, { "resolution", "scan" }, { "downsampling", "scaling" },
+            { "window", "app-window" }, { "alwaysontop", "layers" }, { "resolution", "scan" }, { "downsampling", "scaling" },
             { "aspect", "ratio" }, { "antialiasing", "sparkles" }, { "renderdistance", "eye" },
             { "framerate", "gauge" }, { "counter", "gauge" }, { "recorder", "film" }, { "recordlength", "timer" },
             { "updates", "download" }, { "autosave", "save" }, { "saveonquit", "save" },
@@ -1369,31 +1399,7 @@ namespace {
         return "sliders-horizontal";
     }
 
-    // HOW A STEPPED VALUE IS DRAWN (phase 100, the decision's plates): a short set of short options
-    // side by side, every one shown and the one in force lit (Windowed and Fullscreen; Off, 2x, 4x,
-    // 8x); a longer set as a tick per option beside the option's words; past a dozen, the words
-    // alone. `label` gives option i's words, or null for a number.
-    template <typename Label>
-    void draw_options(oot::ui::rows::Row& row, int count, int number, Label label) {
-        constexpr int MOST_SIDE_BY_SIDE = 4;
-        constexpr size_t LONGEST_SIDE_BY_SIDE = 11;
-        constexpr int MOST_TICKS = 12;
-        bool short_words = count >= 2 && count <= MOST_SIDE_BY_SIDE;
-        for (int i = 0; short_words && i < count; ++i) {
-            const char* words = label(i);
-            short_words = words != nullptr && std::strlen(words) <= LONGEST_SIDE_BY_SIDE;
-        }
-        if (short_words) {
-            for (int i = 0; i < count; ++i) {
-                row.choices.push_back({ label(i), i == number });
-            }
-        }
-        else if (count >= 2 && count <= MOST_TICKS) {
-            for (int i = 0; i < count; ++i) {
-                row.ticks.push_back(i == number ? 1 : 0);
-            }
-        }
-    }
+    using oot::ui::rows::draw_options;
 
     std::vector<oot::ui::rows::Row> row_views(Screen screen, const oot::ui::Settings& s,
                                               const oot::ui::lighting::Lighting& l) {
@@ -1476,6 +1482,11 @@ namespace {
                 case RowKind::LightingReset:
                     row.label = "Reset";
                     row.value = "Low starting values, ray tracing Off";
+                    row.shape = oot::ui::rows::Action;
+                    break;
+                case RowKind::GameReset:
+                    row.label = "Reset";
+                    row.value = "Start the game again from its opening";
                     row.shape = oot::ui::rows::Action;
                     break;
                 case RowKind::Rom:
@@ -1564,6 +1575,7 @@ namespace {
                     case RowKind::TimeOfDay:     row.icon = "clock"; break;
                     case RowKind::Piece:         row.icon = "layers"; break;
                     case RowKind::LightingReset: row.icon = "rotate-ccw"; break;
+                    case RowKind::GameReset:     row.icon = "power"; break;
                     case RowKind::LightingSweep: row.icon = "film"; break;
                     case RowKind::LightingMenu:  row.icon = "sun"; break;
                     case RowKind::HudMenu:       row.icon = "layers"; break;
@@ -1631,6 +1643,23 @@ namespace {
         if (std::sscanf(id.c_str(), "pick-%d-%d", &index, &wanted) != 2) {
             return;
         }
+        // The Controls page's rows (ui_controls.h): stepped by its own nudge, as Left and Right do.
+        if (g_screen == Screen::Controls) {
+            g_cfocus = index;
+            for (int guard = 0; guard < 16; ++guard) {
+                int now = -1;
+                for (const oot::ui::rows::Row& row : controls::foot_views()) {
+                    for (size_t c = 0; row.n == index && c < row.choices.size(); ++c) {
+                        if (row.choices[c].chosen) now = static_cast<int>(c);
+                    }
+                }
+                if (now < 0 || now == wanted || !controls::nudge(index, wanted > now ? 1 : -1)) {
+                    break;
+                }
+            }
+            reflect_controls();
+            return;
+        }
         const std::vector<RowSpec>& specs = rows_for(g_screen);
         if (index < 0 || index >= static_cast<int>(specs.size())) {
             return;
@@ -1659,6 +1688,12 @@ namespace {
 
     void click_step(const std::string& id) {
         const int index = std::atoi(id.c_str() + 5);
+        if (g_screen == Screen::Controls) {
+            g_cfocus = index;
+            controls::nudge(index, id.compare(0, 5, "prev-") == 0 ? -1 : 1);
+            reflect_controls();
+            return;
+        }
         const std::vector<RowSpec>& specs = rows_for(g_screen);
         if (index < 0 || index >= static_cast<int>(specs.size())) {
             return;
@@ -2010,7 +2045,11 @@ namespace {
                         }
                         break;
                     case RowKind::Quit:
-                        launch::request_quit();
+                        // In play, "Close Game?" first, as the window's close button asks (launch.h).
+                        launch::request_close();
+                        break;
+                    case RowKind::GameReset:
+                        confirm_reset(screen);
                         break;
                 }
                 break;
@@ -2425,6 +2464,8 @@ namespace {
         std::string foot;
         std::function<void(bool)> answered;
         Screen back = Screen::Settings;   // where No, Escape and a finished Yes return to
+        bool danger = false;              // the detail drawn as a red notice: something will be lost
+        bool closing = false;             // the window's close button asked it (confirm_close)
     };
     bool g_confirm_open = false;
     Confirm g_confirm;
@@ -2462,6 +2503,65 @@ namespace {
             }
         };
         ask_confirm(std::move(c));
+    }
+
+    // RESET (a player's suggestion, 2026-11-22): the program closes as Quit closes it, keeping a
+    // moment first when Save on quit is on (the owner, 2026-11-22), and starts again straight into
+    // the game's opening (main/reset.h). No is the default answer: this ends the play in progress.
+    void confirm_reset(Screen back) {
+        const bool keeps = oot::ui::settings().save_on_quit == 1;
+        Confirm c;
+        c.title = "Reset";
+        c.question = "Reset the game?";
+        c.detail = std::string("The program closes and starts again straight into the game's opening, as a console's "
+                               "reset button would. ") +
+                   (keeps ? "Save on quit is on, so a moment of where you are now is kept first, as it is when you "
+                            "close the window. "
+                          : "Anything since your last save is lost. ") +
+                   "Resume on start sits this one start out and stays as you set it.";
+        c.no_label = "No, keep playing";
+        c.yes_label = "Yes, reset";
+        c.foot = "Your saves and moments stay as they are";
+        c.back = back;
+        c.answered = [](bool yes) {
+            if (yes) {
+                launch::request_reset();
+            }
+        };
+        ask_confirm(std::move(c));
+    }
+
+    // CLOSE GAME? (the owner, 2026-11-22): the window's close button and Alt+F4 ask first in play,
+    // as Reset does (the words and the second press rule: ui/shell/shell.h). A second press closes
+    // without waiting, so the window can always be closed even if the question is somehow not seen.
+    std::chrono::steady_clock::time_point g_close_asked_at;
+
+    void confirm_close() {
+        const auto now = std::chrono::steady_clock::now();
+        if (g_confirm_open && g_confirm.closing && g_screen == Screen::Ask) {
+            if (oot::ui::menu::second_close_counts(std::chrono::duration<double>(now - g_close_asked_at).count())) {
+                launch::request_quit();
+            }
+            return;
+        }
+        const oot::ui::menu::CloseQuestion words = oot::ui::menu::close_question(oot::ui::settings().save_on_quit == 1);
+        Confirm c;
+        c.title = "Close";
+        c.question = "Close Game?";
+        c.detail = words.detail;
+        c.danger = words.danger;
+        c.closing = true;
+        c.no_label = "No, keep playing";
+        c.yes_label = "Yes, close";
+        c.foot = "Press the window's close button again to close without answering";
+        c.back = (g_screen == Screen::Ask) ? Screen::None : g_screen;
+        c.answered = [](bool yes) {
+            if (yes) {
+                launch::request_quit();
+            }
+        };
+        ask_confirm(std::move(c));
+        g_close_asked_at = now;
     }
 
     // Is this change the frame recorder being switched ON? Only that one direction is gated: a
@@ -2597,6 +2697,9 @@ namespace {
             return;
         }
         ask_focus_draw();
+        if (Rml::Element* detail = g_ask_doc->GetElementById("ask-detail")) {
+            detail->SetClass("danger-notice", g_confirm_open && g_confirm.danger);
+        }
         // A confirmation wins over the first run questions, which only ever run before there is
         // anything else on screen anyway.
         if (g_confirm_open) {
@@ -3130,13 +3233,18 @@ namespace {
         if (g_controls_doc == nullptr) {
             return;
         }
+        // The template's rows carry their focus in the model; the bindings, as a class.
+        oot::ui::rows::focus(oot::ui::rows::List::ControlsTop, g_cfocus);
+        oot::ui::rows::focus(oot::ui::rows::List::ControlsFoot, g_cfocus);
         for (int i = 0; i < controls::row_count(); ++i) {
             const std::string n = std::to_string(i);
-            if (Rml::Element* e = g_controls_doc->GetElementById("crow-" + n)) {
-                e->SetClass("on", i == g_cfocus);
-                if (i == g_cfocus) {
-                    e->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, list_scroll() });
-                }
+            Rml::Element* binding = g_controls_doc->GetElementById("crow-" + n);
+            if (binding != nullptr) {
+                binding->SetClass("on", i == g_cfocus);
+            }
+            Rml::Element* shown = binding != nullptr ? binding : g_controls_doc->GetElementById("row-" + n);
+            if (i == g_cfocus && shown != nullptr) {
+                shown->ScrollIntoView(Rml::ScrollIntoViewOptions{ Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, list_scroll() });
             }
             for (int s = 0; s < oot::input::BINDINGS_PER_INPUT; ++s) {
                 if (Rml::Element* e = g_controls_doc->GetElementById("cslot-" + n + "-" + std::to_string(s))) {
@@ -3153,14 +3261,22 @@ namespace {
         if (g_controls_doc == nullptr) {
             return;
         }
-        Rml::Element* rows = g_controls_doc->GetElementById("controls-rows");
-        if (rows == nullptr) {
+        Rml::Element* scroller = g_controls_doc->GetElementById("controls-rows");
+        Rml::Element* rows = g_controls_doc->GetElementById("controls-bindings");
+        if (scroller == nullptr || rows == nullptr) {
             return;
         }
+        // The device, the deadzone, rumble and the reset are the settings rows' template's
+        // (ui_controls.h, top_views); only the bindings, with their two columns, are drawn here.
+        oot::ui::rows::set(oot::ui::rows::List::ControlsTop, controls::top_views());
+        oot::ui::rows::set(oot::ui::rows::List::ControlsFoot, controls::foot_views());
         std::string rml;
         bool headed = false;
         for (int i = 0; i < controls::row_count(); ++i) {
             const controls::Row r = controls::row(i);
+            if (r.kind != controls::RowKind::Binding) {
+                continue;
+            }
             const std::string n = std::to_string(i);
 
             // THE COLUMNS ARE NAMED, once, above the first binding row (the user, 2026-09-27:
@@ -3169,7 +3285,7 @@ namespace {
             // buttons on the right stick AND on face buttons; nothing on screen said so, so the
             // second column read as a duplicate of the first. This heading is markup rather than
             // a row in the model on purpose: it must not be something the selection can land on.
-            if (r.kind == controls::RowKind::Binding && !headed) {
+            if (!headed) {
                 headed = true;
                 // `cols`, NOT `heading`: case.rcss already has a `.heading` for a section title
                 // and it is display: block, which turned this row from a flex row into a stack
@@ -3203,24 +3319,18 @@ namespace {
                        "<span class=\"label-text\">" + escape(controls::row_label(i)) + "</span>" +
                        "<span class=\"badge\">" + escape(badge) + "</span></span>";
             }
-            if (r.kind == controls::RowKind::Binding) {
-                rml += "<span class=\"slots\">";
-                for (int s = 0; s < oot::input::BINDINGS_PER_INPUT; ++s) {
-                    // A binding the free camera is currently holding the stick out from under is
-                    // struck through rather than removed: it is still bound, still saved, and
-                    // works again the moment free aim goes off.
-                    const std::string idle = controls::slot_idle(i, s) ? " idle" : "";
-                    rml += "<span class=\"slot" + idle + "\" id=\"cslot-" + n + "-" + std::to_string(s) + "\">" +
-                           escape(controls::row_value(i, s)) + "</span>";
-                }
-                rml += "</span>";
+            rml += "<span class=\"slots\">";
+            for (int s = 0; s < oot::input::BINDINGS_PER_INPUT; ++s) {
+                // A binding the free camera is currently holding the stick out from under is
+                // struck through rather than removed: it is still bound, still saved, and
+                // works again the moment free aim goes off.
+                const std::string idle = controls::slot_idle(i, s) ? " idle" : "";
+                rml += "<span class=\"slot" + idle + "\" id=\"cslot-" + n + "-" + std::to_string(s) + "\">" +
+                       escape(controls::row_value(i, s)) + "</span>";
             }
-            else {
-                rml += "<span class=\"value\" id=\"cvalue-" + n + "\">" + escape(controls::row_value(i, 0)) + "</span>";
-            }
-            rml += "</div>";
+            rml += "</span></div>";
         }
-        replace_rows(g_controls_doc, rows, rml);
+        replace_rows(g_controls_doc, rows, rml, nullptr, scroller);
 
         // The reason, under the rows it explains. Empty means nothing is being ignored, and the
         // element takes no room.
@@ -3312,7 +3422,7 @@ namespace {
             }
             case Status::Bound:
                 reflect_controls();
-                set_text(g_controls_doc, "capture-line", "Bound to " + controls::row_value(g_cfocus, g_cslot));
+                set_text(g_controls_doc, "capture-line", controls::bound_line(g_cfocus, g_cslot));
                 settle_capture();
                 break;
             case Status::TimedOut:
@@ -3444,6 +3554,53 @@ namespace {
         }
     }
 
+    // THE WINDOW BUTTONS AS WINDOWS SEES THEM (main/caption.h). Each frame, after layout: where the
+    // three are drawn, from whichever shown document has them (the launcher's head, the game's
+    // bar), for Windows' hit test; and the hover and press Windows reports, drawn on them, since the
+    // pointer over a caption button never reaches the interface. Maximize shows the restore glyph
+    // while the window is maximized, as Windows' own does.
+    void sync_caption() {
+        static constexpr const char* IDS[3] = { "win-min", "win-max", "win-close" };
+        static constexpr caption::Button BUTTONS[3] = { caption::Button::Minimize, caption::Button::Maximize,
+                                                        caption::Button::Close };
+        Rml::Element* shown[3] = {};
+        for (int d = 0; d < g_context->GetNumDocuments(); ++d) {
+            Rml::ElementDocument* doc = g_context->GetDocument(d);
+            for (int i = 0; i < 3; ++i) {
+                Rml::Element* e = doc->GetElementById(IDS[i]);
+                if (shown[i] == nullptr && e != nullptr && e->IsVisible(true)) {
+                    shown[i] = e;
+                }
+            }
+        }
+        caption::Rect rects[3];
+        const caption::Button hovered = caption::hovered();
+        const caption::Button pressed = caption::pressed();
+        for (int i = 0; i < 3; ++i) {
+            Rml::Element* e = shown[i];
+            if (e == nullptr) {
+                continue;
+            }
+            const Rml::Vector2f at = e->GetAbsoluteOffset(Rml::BoxArea::Border);
+            const Rml::Vector2f size = e->GetBox().GetSize(Rml::BoxArea::Border);
+            rects[i] = { static_cast<int>(std::lround(at.x)), static_cast<int>(std::lround(at.y)),
+                         static_cast<int>(std::lround(size.x)), static_cast<int>(std::lround(size.y)) };
+            e->SetClass("is-hot", hovered == BUTTONS[i]);
+            e->SetClass("is-down", pressed == BUTTONS[i]);
+        }
+        caption::set_buttons(rects[0], rects[1], rects[2]);
+
+        const char* glyph = caption::maximized() ? "window/restore.svg" : "../icons/square.svg";
+        for (int d = 0; d < g_context->GetNumDocuments(); ++d) {
+            if (Rml::Element* max = g_context->GetDocument(d)->GetElementById("win-max")) {
+                if (Rml::Element* icon = max->GetFirstChild(); icon != nullptr &&
+                                                              icon->GetAttribute<Rml::String>("src", "") != glyph) {
+                    icon->SetAttribute("src", glyph);
+                }
+            }
+        }
+    }
+
     void click_chrome(const std::string& id) {
         if (id == "win-min") {
             launch::request_minimize();
@@ -3530,12 +3687,25 @@ namespace {
     // The game window's frame
     // ------------------------------------------------------------------------------------------
 
+    // THE BAR ABOVE THE MENU, BELOW ITS PAGES (the user, 2026-11-20: "the header bar must appear on
+    // top of it"). The frame went to the very back each time it showed, so the docked menu covered
+    // the bar's right end and its buttons. Now the shell is the backmost document and the frame
+    // the one just above it; every page and dialog stays above both.
+    void stack_frame() {
+        if (g_frame_doc != nullptr) {
+            g_frame_doc->PushToBack();
+        }
+        if (g_shell_doc_for_inset != nullptr && g_shell_doc_for_inset->IsVisible()) {
+            g_shell_doc_for_inset->PushToBack();
+        }
+    }
+
     void frame_show() {
         if (g_frame_doc == nullptr || g_frame_shown) {
             return;
         }
         g_frame_doc->Show();
-        g_frame_doc->PushToBack();
+        stack_frame();
         g_frame_shown = true;
         g_frame_since = Clock::now();
     }
@@ -3546,10 +3716,18 @@ namespace {
             return;
         }
         const bool fullscreen = g_fullscreen.load(std::memory_order_relaxed);
-        const bool header = g_pointer_in_band ||
+        // A pointer on a window button is over the bar, though the interface never sees it there.
+        // The bar stays up while a menu is open over the game, which starts under it (refresh_shell).
+        const bool header = g_pointer_in_band || caption::hovered() != caption::Button::None ||
+                            g_screen != Screen::None ||
                             seconds_since(g_band_left_at) < HEADER_LINGER_SECONDS ||
                             seconds_since(g_frame_since) < HEADER_INTRO_SECONDS;
         const bool edge = !fullscreen;
+        // FULL SCREEN HAS NOTHING TO MAXIMIZE OR RESTORE (the user, 2026-11-20: "it makes more sense
+        // when full screen is enabled to hide the maximize option"), so its button goes there.
+        if (Rml::Element* max = g_frame_doc->GetElementById("win-max")) {
+            max->SetClass("gone", fullscreen);
+        }
         if (header != g_header_shown) {
             g_header_shown = header;
             if (Rml::Element* e = g_frame_doc->GetElementById("frame-bar")) {
@@ -3587,7 +3765,7 @@ namespace {
         if (up != g_frame_doc->IsVisible()) {
             if (up) {
                 g_frame_doc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
-                g_frame_doc->PushToBack();
+                stack_frame();
             }
             else {
                 g_frame_doc->Hide();
@@ -4022,7 +4200,8 @@ namespace {
             const bool ok = exists && oot::moments::read_slot(file, header, save_words, context_words, why);
             g_moment_present[moment_index(slot)] = ok;
 
-            rml += "<div class=\"row mrow\" id=\"mrow-" + moment_row_id(slot) + "\">";
+            oot::ui::moment_row::Parts row;
+            row.id = moment_row_id(slot);
             const std::filesystem::path thumb = oot::moments::slot_file(slot, ".rgba");
             // A moment from before the raw picture was written beside its PNG has only the PNG,
             // which this interface cannot draw: the raw one is made from it once, here.
@@ -4047,12 +4226,8 @@ namespace {
                 const auto stamp = std::filesystem::last_write_time(thumb, ec).time_since_epoch().count();
 #endif
                 src += "?v=" + std::to_string(stamp) + "-" + std::to_string(std::filesystem::file_size(thumb, ec));
-                rml += "<img class=\"thumb\" src=\"" + escape(src) + "\"/>";
+                row.picture = src;
             }
-            else {
-                rml += "<div class=\"thumb empty\"></div>";
-            }
-            rml += "<span class=\"label\">";
             // WHERE IT WAS TAKEN, BY NAME (the user, 2026-10-13: "a user friendly location along with
             // it: Fire Temple, Forest Temple, Inside Jabu-Jabu, Lake Hylia, Temple of Time, Mask Shop").
             // New moments are named for their place when taken; an older one still named "Scene 52 at
@@ -4063,17 +4238,8 @@ namespace {
             if (ok && where.place != nullptr && title.compare(0, old_name.size(), old_name) == 0) {
                 title = std::string(where.place) + title.substr(old_name.size());
             }
-            if (ok) {
-                rml += escape(title) + "<span class=\"slot\">" + escape(moment_slot_name(slot)) + "</span>";
-            }
-            else if (exists) {
-                rml += escape(moment_slot_name(slot)) + "<span class=\"slot\">" + escape(why) + "</span>";
-            }
-            else {
-                rml += escape(moment_slot_name(slot)) + "<span class=\"slot\">Empty</span>";
-            }
-            rml += "</span>";
-            rml += "<span class=\"value\">";
+            row.title = ok ? title : moment_slot_name(slot);
+            row.slot = ok ? moment_slot_name(slot) : exists ? why : std::string("Empty");
             if (ok) {
                 // The wall clock the moment was taken at, as the machine shows dates.
                 char when[32] = {};
@@ -4085,9 +4251,9 @@ namespace {
                 // catalog has no place for it.
                 const std::string area = (where.region != nullptr) ? std::string(where.region)
                                                                    : (std::string("Scene ") + std::to_string(header.scene));
-                rml += escape(area + " \xC2\xB7 " + when);
+                row.where = area + " \xC2\xB7 " + when;
             }
-            rml += "</span></div>";
+            rml += oot::ui::moment_row::rml(row);
         }
         replace_rows(g_moments_doc, rows, rml,
                      [&]() { cap_long_rows(g_moments_doc, "moment-rows", rows_cap(Screen::Moments)); });
@@ -4400,25 +4566,19 @@ namespace {
         // settings list's `prev-`/`next-`, because those are read as indices into the settings
         // table and this row is not in it: sharing them would send a click here into
         // nudge_setting with a row number that means something else entirely.
+        // Each row's words in the settings rows' group, so a narrow page stacks them (ui_text_row.h).
         if (warps_has_time_row()) {
-            rml += "<div class=\"row\" id=\"wrow-0\">";
-            rml += "<span class=\"label\">Time of day</span>";
-            rml += "<span class=\"value\">";
-            rml += "<span class=\"step\" id=\"wprev-0\">&#8249;</span>";
-            rml += "<span class=\"shown\">" + escape(TIMES[g_time_index].label) + "</span>";
-            rml += "<span class=\"step\" id=\"wnext-0\">&#8250;</span>";
-            rml += "</span></div>";
+            rml += oot::ui::text_row::rml({ "wrow-0", "", "Time of day",
+                                   "<span class=\"step prev\" id=\"wprev-0\">&#8249;</span>"
+                                   "<span class=\"shown\">" + escape(TIMES[g_time_index].label) + "</span>"
+                                   "<span class=\"step\" id=\"wnext-0\">&#8250;</span>" });
         }
 
         for (int i = 0; i < warps::row_count(); ++i) {
-            const std::string n = std::to_string(i + warps_time_rows());
             // The row the game is standing in is marked, because "which of these am I in" is
             // otherwise guesswork the moment you have warped once.
-            const char* here = warps::row_is_here(i) ? " here" : "";
-            rml += "<div class=\"row" + std::string(here) + "\" id=\"wrow-" + n + "\">";
-            rml += "<span class=\"label\">" + escape(warps::row_label(i)) + "</span>";
-            rml += "<span class=\"value\">" + escape(warps::row_value(i)) + "</span>";
-            rml += "</div>";
+            rml += oot::ui::text_row::rml({ "wrow-" + std::to_string(i + warps_time_rows()), warps::row_is_here(i) ? "here" : "",
+                                   warps::row_label(i), escape(warps::row_value(i)) });
         }
         replace_rows(g_warps_doc, rows, rml,
                      [&]() { cap_long_rows(g_warps_doc, "warp-rows", rows_cap(Screen::Warps)); });
@@ -5104,6 +5264,16 @@ namespace {
                                       std::chrono::milliseconds(static_cast<int>(seconds * 1000.0f)), false });
     }
 
+    // Hidden at once, any fade on it dropped; the next fade_in replaces its opacity animation.
+    void hide_now(Rml::ElementDocument* doc) {
+        if (doc == nullptr) {
+            return;
+        }
+        stop_fading(doc);
+        doc->SetClass("is-fading", false);
+        doc->Hide();
+    }
+
     void fade_out(Rml::ElementDocument* doc, float seconds) {
         if (doc == nullptr || !doc->IsVisible()) {
             return;
@@ -5234,6 +5404,9 @@ namespace {
         state.title = info_of(g_router.section()).name;
         state.version = oot::build_info::version;
         state.held = g_router.mode() == menu::Mode::Game && g_router.open();
+        // The game window's bar stays up over an open menu in the game (poll_frame), so the menu
+        // starts under it.
+        state.bar = g_frame_shown && g_router.mode() == menu::Mode::Game;
         const std::vector<menu::Section> order = g_router.sections();
         const int n = static_cast<int>(order.size());
         int current = 0;
@@ -5268,7 +5441,7 @@ namespace {
             fade_out(g_shell_doc, oot::ui::tokens::duration_base);
         }
         if (up) {
-            g_shell_doc->PushToBack();
+            stack_frame();
         }
     }
 
@@ -5312,6 +5485,8 @@ namespace {
         doc->SetProperty(Rml::PropertyId::Top, Rml::Property(at.y, Rml::Unit::PX));
         doc->SetProperty(Rml::PropertyId::Width, Rml::Property(size.x, Rml::Unit::PX));
         doc->SetProperty(Rml::PropertyId::Height, Rml::Property(size.y, Rml::Unit::PX));
+        // A narrow page stacks its rows' label and value (rows_model.h, stacked).
+        doc->SetClass("narrow", oot::ui::rows::stacked(size.x, g_context->GetDensityIndependentPixelRatio()));
         g_host_doc = doc;
         g_host_at = at;
         g_host_size = size;
@@ -5790,6 +5965,14 @@ namespace {
                     handle_nav(c.nav);
                     break;
 
+                case Command::Kind::NavRelease:
+                    handle_nav_release(c.nav);
+                    break;
+
+                case Command::Kind::AskClose:
+                    confirm_close();
+                    break;
+
                 case Command::Kind::Text:
                     g_context->ProcessTextInput(c.text);
                     break;
@@ -5864,6 +6047,12 @@ namespace {
         switch (nav) {
             case Nav::Up:
             case Nav::Down:
+                // About scrolls with a held direction repeating, so it sounds once on the release
+                // instead (handle_nav_release; the owner, 2026-11-22).
+                if (g_screen != Screen::About) {
+                    snd::play(snd::Cue::Move);
+                }
+                break;
             case Nav::SectionPrev:
             case Nav::SectionNext:
                 snd::play(snd::Cue::Move);
@@ -5882,6 +6071,13 @@ namespace {
             default:
                 snd::play(snd::Cue::Toggle);
                 break;
+        }
+    }
+
+    void handle_nav_release(Nav nav) {
+        if (g_screen == Screen::About && g_splash != SplashState::Showing && !g_kb_open &&
+            (nav == Nav::Up || nav == Nav::Down)) {
+            oot::ui::sound::play(oot::ui::sound::Cue::Move);
         }
     }
 
@@ -5961,8 +6157,8 @@ namespace {
                 else if (nav == Nav::Up || nav == Nav::Down) {
                     Rml::Element* body = g_about_doc != nullptr ? g_about_doc->GetElementById("about-body") : nullptr;
                     if (body != nullptr) {
-                        body->ScrollTo(Rml::Vector2f(body->GetScrollLeft(),
-                                                     body->GetScrollTop() + (nav == Nav::Down ? ABOUT_SCROLL_STEP : -ABOUT_SCROLL_STEP)),
+                        const float step = ABOUT_SCROLL_STEP_DP * g_context->GetDensityIndependentPixelRatio();
+                        body->ScrollTo(Rml::Vector2f(body->GetScrollLeft(), body->GetScrollTop() + (nav == Nav::Down ? step : -step)),
                                        list_scroll());
                     }
                 }
@@ -6053,6 +6249,10 @@ namespace {
             if (Rml::ElementDocument* doc = rows_doc(screen)) {
                 oot::ui::rows::install(doc->GetElementById(rows_container(screen)), rows_list(screen));
             }
+        }
+        if (g_controls_doc != nullptr) {
+            oot::ui::rows::install(g_controls_doc->GetElementById("controls-top"), oot::ui::rows::List::ControlsTop);
+            oot::ui::rows::install(g_controls_doc->GetElementById("controls-foot-rows"), oot::ui::rows::List::ControlsFoot);
         }
 
         if (g_settings_doc == nullptr && g_about_doc == nullptr) {
@@ -6149,6 +6349,43 @@ namespace oot::ui::shell {
         return 0;
     }
 
+    // Every rows page's real rows at the defaults, for ui_navcheck --rows (the check that no row's
+    // label, value or choices overlap or overflow at any interface size): one line per page, the
+    // container's id, the model's list, the page's name and its rows as JSON.
+    int dump_rows_json(const std::string& path) {
+        const Screen screens[] = { Screen::Launch, Screen::Settings, Screen::Graphics, Screen::Lighting,
+                                   Screen::Gameplay, Screen::Capture, Screen::Photo, Screen::Video,
+                                   Screen::Hud, Screen::Debug };
+        std::FILE* out = std::fopen(path.c_str(), "wb");
+        if (out == nullptr) {
+            std::printf("ROWS_JSON_FAIL cannot write %s\n", path.c_str());
+            return 1;
+        }
+        oot::ui::Settings s{};
+        oot::ui::clamp(s);
+        for (const Screen screen : screens) {
+            std::fprintf(out, "%s\t%d\t%s\t%s\n", rows_container(screen), static_cast<int>(rows_list(screen)),
+                         screen_name(screen), oot::ui::rows::to_json(row_views(screen, s, oot::ui::lighting::defaults())).c_str());
+        }
+        // The Controls page's template rows for a pad with a long name and no motor, so the
+        // rumble row's note is laid out too.
+        const auto controls_line = [out](const char* container, oot::ui::rows::List list, const std::vector<oot::ui::rows::Row>& views) {
+            std::fprintf(out, "%s\t%d\t%s\t%s\n", container, static_cast<int>(list), screen_name(Screen::Controls),
+                         oot::ui::rows::to_json(views).c_str());
+        };
+        controls_line("controls-top", oot::ui::rows::List::ControlsTop,
+                      { controls::device_view(0, "Wireless Controller with a long name", 1, 3) });
+        controls_line("controls-foot-rows", oot::ui::rows::List::ControlsFoot,
+                      { controls::deadzone_view(40, oot::input::DEFAULT_DEADZONE_PERCENT),
+                        controls::gyro_view(41, true), controls::gyro_look_view(42, true),
+                        controls::gyro_sensitivity_view(43, oot::input::DEFAULT_GYRO_SENSITIVITY_PERCENT),
+                        controls::gyro_axes_view(44, oot::input::GYRO_AXES_COUNT - 1),
+                        controls::rumble_view(45, true, false), controls::reset_view(46) });
+        std::fclose(out);
+        std::printf("ROWS_JSON_OK %s\n", path.c_str());
+        return 0;
+    }
+
     void configure(const std::string& assets_dir, const std::string& settings_path) {
         g_assets_dir = assets_dir;
         g_settings_path = settings_path;
@@ -6167,6 +6404,7 @@ namespace oot::ui::shell {
         }
         if (start()) {
             g_started = true;
+            g_ready.store(true, std::memory_order_release);
             say("interface ready");
             if (g_game_started) {
                 frame_show();
@@ -6183,6 +6421,7 @@ namespace oot::ui::shell {
         if (!g_started) {
             return;
         }
+        g_ready.store(false, std::memory_order_release);
         oot::ui::rows::release();
         shell_model::release();
         g_shell_doc = nullptr;
@@ -6249,7 +6488,11 @@ namespace oot::ui::shell {
             return;
         }
 
-        // Every call is one presented frame: the frame rate counter counts them.
+        // Every call is one presented frame: the frame rate counter counts them. In play the game's
+        // own picture is what was drawn, so a direct start's held window is shown now (launch.h).
+        if (launch::game_started()) {
+            launch::request_show_window();
+        }
         poll_counter();
         poll_guide();
         poll_letterbox();
@@ -6277,6 +6520,17 @@ namespace oot::ui::shell {
             }
             else if (settings_like(g_screen) || g_screen == Screen::Launch) {
                 cap_long_rows(rows_doc(g_screen), rows_container(g_screen), rows_cap(g_screen));
+            }
+        }
+
+        // ALWAYS ON TOP (ui_settings.h): the window follows the row the frame it changes, asked of
+        // the thread that owns the window.
+        {
+            static int topmost_applied = -1;
+            const int topmost = oot::ui::settings().always_on_top;
+            if (topmost != topmost_applied) {
+                topmost_applied = topmost;
+                launch::request_topmost(topmost != 0);
             }
         }
 
@@ -6362,6 +6616,13 @@ namespace oot::ui::shell {
             g_launch_note.clear();
             g_router.set_mode(menu::Mode::Game);
             show(Screen::None);
+            // THE LAUNCHER GOES AT ONCE (the user, 2026-11-20: "upon pressing play, i see a flash
+            // where the menu converts to the ingame size but still shows the ui from launcher").
+            // show() fades the page and the shell out, but the router is in the game's mode by
+            // then, so the fade drew the shell docked with the game's sections over the
+            // launcher's page. The launcher's window is becoming the game's, so it is cut.
+            hide_now(g_shell_doc);
+            hide_now(g_launch_doc);
             frame_show();
             show_hint();
         }
@@ -6420,6 +6681,11 @@ namespace oot::ui::shell {
             g_context->Update();
             apply_picture_inset(g_screen);
         }
+        // The contour survey covers its ground at the size the update gave it (ui_survey.h).
+        if (survey::lay(g_context)) {
+            g_context->Update();
+        }
+        sync_caption();
         follow_rows_focus();
         g_context->Render();
         // The window is shown once something has been drawn in it (launch.h), and the splash counts
@@ -6467,6 +6733,26 @@ namespace oot::ui::shell {
         Command c;
         c.kind = Command::Kind::Nav;
         c.nav = nav;
+        post(c);
+        return true;
+    }
+
+    void post_nav_release(Nav nav) {
+        if (!g_capturing.load(std::memory_order_relaxed)) {
+            return;
+        }
+        Command c;
+        c.kind = Command::Kind::NavRelease;
+        c.nav = nav;
+        post(c);
+    }
+
+    bool post_ask_close() {
+        if (!g_ready.load(std::memory_order_acquire)) {
+            return false;
+        }
+        Command c;
+        c.kind = Command::Kind::AskClose;
         post(c);
         return true;
     }

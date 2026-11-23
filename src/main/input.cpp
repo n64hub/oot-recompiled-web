@@ -1,5 +1,6 @@
 #include "main/input.h"
 
+#include "main/gyro.h"
 #include "main/input_bindings.h"
 #include "main/keyvalue.h"
 
@@ -8,6 +9,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -26,6 +28,7 @@ namespace oot::input::devices {
             SDL_Joystick* joystick = nullptr;           // always set (a controller's underlying one)
             PadInfo info;
             bool is_virtual = false;
+            bool sensors_on = false;    // its gyroscope and accelerometer, while its Gyro aiming is on
             bool rumble_on = false;
             uint32_t rumble_refreshed_at = 0;
             // Edges through the profile (take_pad_edges): what was active last tick, and what
@@ -65,6 +68,7 @@ namespace oot::input::devices {
             bool pad_is_controller = false;
             uint32_t started_at = 0;
             bool fresh = false;   // bound since the last tick: that tick reports no edges
+            std::vector<BindingSlot> moved;   // the slots the bound key or button was taken off
         };
         Capture g_capture;
         // The capture is armed from the render thread (the controls document) and fed from the
@@ -137,6 +141,8 @@ namespace oot::input::devices {
             }
             pad.info.rumbles = (controller != nullptr) ? (SDL_GameControllerHasRumble(controller) == SDL_TRUE)
                                                        : (SDL_JoystickHasRumble(joystick) == SDL_TRUE);
+            pad.info.instance = pad.instance;
+            pad.info.gyro = gyro::supported(controller);
             if (pad.is_virtual) {
                 g_virtual = joystick;
             }
@@ -204,6 +210,7 @@ namespace oot::input::devices {
             if (!found) {
                 return;
             }
+            gyro::close(instance);
             if (removed.is_virtual) {
                 g_virtual = nullptr;
             }
@@ -616,6 +623,13 @@ namespace oot::input::devices {
             const Profile* profile = profile_of(pad, *bindings);
             const InputBindings& map = map_for(profile);
 
+            // A pad's motion sensors are on only while its Gyro aiming is (main/gyro.h): a pad whose
+            // row is off sends no readings and reports exactly as it did before gyro aiming existed.
+            const bool gyro_wanted = pad.info.gyro && profile != nullptr && profile->gyro;
+            if (gyro_wanted != pad.sensors_on) {
+                pad.sensors_on = gyro::set_enabled(pad.controller, pad.instance, gyro_wanted) && gyro_wanted;
+            }
+
             // Rumble is a pulse SDL stops on its own; while the game holds it on, keep pulsing.
             // A profile that has turned rumble off stops it here, mid-pulse if need be.
             const bool allowed = profile == nullptr || profile->rumble;
@@ -750,7 +764,7 @@ namespace oot::input::devices {
         return true;
     }
 
-    bool read_pad(int slot, uint16_t* buttons, float* x, float* y) {
+    bool read_pad(int slot, uint16_t* buttons, float* x, float* y, float* band) {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (slot < 0 || slot >= static_cast<int>(g_pads.size())) {
             return false;
@@ -798,7 +812,136 @@ namespace oot::input::devices {
         const float down = input_deflection(pad, map, GameInput::StickDown);
         *x = apply_deadzone(right - left, deadzone);
         *y = apply_deadzone(up - down, deadzone);
+        if (band != nullptr) {
+            *band = rest_band(deadzone);
+        }
         return true;
+    }
+
+    float rest_band(float deadzone) {
+        // Where a raw reading at the default deadzone lands on this pad's scale (apply_deadzone).
+        const float standard = static_cast<float>(DEFAULT_DEADZONE_PERCENT) / 100.0f;
+        return std::max(0.0f, (standard - deadzone) / (1.0f - deadzone));
+    }
+
+    bool stick_at_rest(float x, float y, float band) {
+        return std::fabs(x) <= band && std::fabs(y) <= band;
+    }
+
+    bool pad_takes_stick(float key_x, float key_y, float pad_x, float pad_y, float band) {
+        return (key_x == 0.0f && key_y == 0.0f) || !stick_at_rest(pad_x, pad_y, band);
+    }
+
+    void hold_back(HeldBack& held, bool let_go, float band, uint16_t* buttons, float* x, float* y) {
+        if (let_go) {
+            held.buttons = *buttons;
+            held.stick = !stick_at_rest(*x, *y, band);
+        }
+        held.buttons &= *buttons;   // a button let go is the game's again
+        *buttons &= static_cast<uint16_t>(~held.buttons);
+        if (held.stick) {
+            if (stick_at_rest(*x, *y, band)) {
+                held.stick = false;
+            }
+            *x = 0.0f;
+            *y = 0.0f;
+        }
+    }
+
+    int stick_selftest() {
+        auto fail = [](const char* what) {
+            std::fprintf(stderr, "CONTROLS_SELFTEST_FAILED: %s\n", what);
+            return 1;
+        };
+        auto close_to = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+
+        // FIRE WHILE AIMING: held and pressed a frame at a time; after a gap (a menu) a hold that
+        // began during it is silent until let go, and a hold that ran through it is kept.
+        {
+            FireTrigger t;
+            if (t.update(false, 0.00) != 0) return fail("fire reported something unpressed");
+            if (t.update(true, 0.05) != 3) return fail("fire's press was not held and pressed");
+            if (t.update(true, 0.10) != 1) return fail("fire held was pressed again");
+            if (t.update(false, 0.15) != 0) return fail("fire let go still held");
+            if (t.update(true, 5.00) != 0) return fail("fire held across a menu fired on the way out");
+            if (t.update(true, 5.05) != 0) return fail("fire held across a menu woke before it was let go");
+            if (t.update(false, 5.10) != 0 || t.update(true, 5.15) != 3) return fail("fire did not press again once let go");
+            // Held through a menu, a draw stays drawn: still held after the gap, not pressed again.
+            if (t.update(true, 5.20) != 1) return fail("fire held before the menu was not held");
+            if (t.update(true, 9.00) != 1) return fail("fire held through a menu was dropped, which would let the draw go");
+            if (t.update(false, 9.05) != 0) return fail("fire let go after a menu still held");
+        }
+
+        const float none = rest_band(0.0f);
+        const float standard = rest_band(static_cast<float>(DEFAULT_DEADZONE_PERCENT) / 100.0f);
+        constexpr uint16_t a = 0x8000;
+
+        // At 0%: a menu closes on a held stick and a held button; the stick comes back to rest,
+        // drifting, and is the game's again, small readings included; the button waits for its
+        // release.
+        {
+            HeldBack held;
+            uint16_t buttons = a;
+            float x = 0.9f;
+            float y = 0.0f;
+            hold_back(held, true, none, &buttons, &x, &y);
+            if (buttons != 0 || x != 0.0f || y != 0.0f) return fail("the press that closed a menu reached the game");
+            buttons = a;
+            x = 0.03f;
+            y = -0.02f;
+            hold_back(held, false, none, &buttons, &x, &y);
+            if (held.stick) return fail("a resting stick at 0% kept the game's stick held back");
+            if (buttons != 0) return fail("a button still down after a menu reached the game");
+            buttons = 0;
+            x = 0.03f;
+            y = -0.02f;
+            hold_back(held, false, none, &buttons, &x, &y);
+            if (!close_to(x, 0.03f) || !close_to(y, -0.02f)) return fail("a small reading at 0% did not reach the game after the hold");
+            buttons = a;
+            hold_back(held, false, none, &buttons, &x, &y);
+            if (buttons != a) return fail("a button pressed again after its release did not reach the game");
+        }
+
+        // At 0%, a menu that closes with the stick resting is not held at all.
+        {
+            HeldBack held;
+            uint16_t buttons = 0;
+            float x = 0.02f;
+            float y = 0.01f;
+            hold_back(held, true, none, &buttons, &x, &y);
+            if (held.stick) return fail("a stick resting at 0% as a menu closed was held back");
+        }
+
+        // At the default the hold is as it always was: any reading past the deadzone is a held
+        // stick, and only zero lets it go.
+        {
+            HeldBack held;
+            uint16_t buttons = 0;
+            float x = 0.5f;
+            float y = 0.0f;
+            hold_back(held, true, standard, &buttons, &x, &y);
+            x = 0.01f;
+            hold_back(held, false, standard, &buttons, &x, &y);
+            if (!held.stick || x != 0.0f) return fail("at the default deadzone a stick past it was let go");
+            x = 0.0f;
+            hold_back(held, false, standard, &buttons, &x, &y);
+            if (held.stick) return fail("at the default deadzone a stick back at zero stayed held");
+        }
+
+        // The stick's owner: the keys keep it while the pad rests, the pad takes it once moved,
+        // and with the keys still the pad's own small readings drive the player.
+        if (!pad_takes_stick(0.0f, 0.0f, 0.03f, 0.0f, none)) return fail("with the keys still, a small pad reading did not drive the player");
+        if (pad_takes_stick(1.0f, 0.0f, 0.03f, 0.01f, none)) return fail("a pad resting at 0% took the stick from the keys");
+        if (!pad_takes_stick(1.0f, 0.0f, 0.5f, 0.0f, none)) return fail("a moved pad did not take the stick from the keys");
+        if (pad_takes_stick(1.0f, 0.0f, 0.0f, 0.0f, standard)) return fail("at the default a pad at zero took the stick from the keys");
+        if (!pad_takes_stick(1.0f, 0.0f, 0.01f, 0.0f, standard)) return fail("at the default a pad past its deadzone did not take the stick");
+
+        // The band itself: the default deadzone's width below the default, nothing at or above it.
+        if (!close_to(none, 0.20f)) return fail("at a 0% deadzone the stick's rest is not the default's 20%");
+        if (!close_to(rest_band(0.10f), 0.10f / 0.90f)) return fail("at a 10% deadzone the rest is not 20% raw on that pad's scale");
+        if (standard != 0.0f || rest_band(0.50f) != 0.0f) return fail("at the default deadzone or more the rest is not exactly zero");
+
+        return 0;
     }
 
     float input_amount(GameInput input) {
@@ -821,6 +964,54 @@ namespace oot::input::devices {
             amount = std::max(amount, apply_deadzone(input_deflection(pad, map, input), deadzone));
         }
         return amount;
+    }
+
+    uint32_t FireTrigger::update(bool held, double now_seconds) {
+        // The game asks every update, a twentieth of a second apart; a quarter second without an
+        // ask is a gap.
+        constexpr double GAP_SECONDS = 0.25;
+        if (last_ < 0.0 || now_seconds - last_ > GAP_SECONDS) {
+            silent_ = held && !was_held_;
+        }
+        last_ = now_seconds;
+        if (!held) {
+            silent_ = false;
+        }
+        const bool pressed = held && !was_held_;
+        was_held_ = held;
+        if (silent_) {
+            return 0;
+        }
+        return (held ? 1u : 0u) | (pressed ? 2u : 0u);
+    }
+
+    uint32_t fire_aim() {
+        static FireTrigger trigger;
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const uint32_t state = trigger.update(input_amount(GameInput::FireAim) >= 0.5f, now);
+        return state | (fire_aim_bound() ? 4u : 0u);
+    }
+
+    bool fire_aim_bound() {
+        const std::shared_ptr<const Bindings> bindings = live();
+        const auto any = [](const InputBindings& map) {
+            for (const Field& f : map[static_cast<size_t>(GameInput::FireAim)]) {
+                if (f.kind != FieldKind::None) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (any(bindings->keyboard)) {
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (const Pad& pad : g_pads) {
+            if (any(map_for(profile_of(pad, *bindings)))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool read_right_stick(int slot, float* x, float* y) {
@@ -895,17 +1086,26 @@ namespace oot::input::devices {
         return g_pads[static_cast<size_t>(slot)].info.rumbles;
     }
 
+    bool pad_has_gyro(int slot) {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (slot < 0 || slot >= static_cast<int>(g_pads.size())) {
+            return false;
+        }
+        return g_pads[static_cast<size_t>(slot)].info.gyro;
+    }
+
     // ------------------------------------------------------------------------------------------
     // Bind by pressing
     // ------------------------------------------------------------------------------------------
 
     namespace {
 
-        // Writes the captured field into the live bindings and the file.
+        // Writes the captured field into the live bindings and the file, taking it off any control it
+        // would clash with on the same device (input_bindings.h, bind_moving).
         void finish_capture(const Field& field) {
             Bindings updated = *live();
             if (g_capture.pad_slot < 0) {
-                updated.keyboard[static_cast<size_t>(g_capture.input)][static_cast<size_t>(g_capture.slot)] = field;
+                g_capture.moved = bind_moving(updated.keyboard, true, g_capture.input, g_capture.slot, field);
             }
             else {
                 std::string guid;
@@ -918,7 +1118,10 @@ namespace oot::input::devices {
                     guid = g_pads[static_cast<size_t>(g_capture.pad_slot)].info.guid;
                 }
                 Profile& profile = profile_for(updated, guid);
-                profile.bindings[static_cast<size_t>(g_capture.input)][static_cast<size_t>(g_capture.slot)] = field;
+                g_capture.moved = bind_moving(profile.bindings, false, g_capture.input, g_capture.slot, field);
+            }
+            for (const BindingSlot& m : g_capture.moved) {
+                std::fprintf(stderr, "[input] capture took it off %s slot %d\n", input_key(m.input), m.slot);
             }
             set_live(updated);
             const bool saved = save_live();
@@ -969,6 +1172,11 @@ namespace oot::input::devices {
     CaptureStatus capture_status() {
         std::lock_guard<std::mutex> capture_lock(g_capture_mutex);
         return g_capture.status;
+    }
+
+    std::vector<BindingSlot> capture_moved() {
+        std::lock_guard<std::mutex> capture_lock(g_capture_mutex);
+        return g_capture.moved;
     }
 
     bool capture_event(const SDL_Event& event) {

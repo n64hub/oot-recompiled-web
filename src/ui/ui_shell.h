@@ -26,6 +26,8 @@ namespace oot::ui::shell {
     // in and out, one line a row (--ui-rows-dump, the menus plan, phase 95). Prints ROWS_DUMP_OK
     // or ROWS_DUMP_FAIL and returns the exit code.
     int dump_rows(const std::string& path);
+    // Every rows page's real rows as JSON lines, for ui_navcheck --rows.
+    int dump_rows_json(const std::string& path);
 
     // Called by the render hook once the device side is up, on the render thread.
     void on_renderer_ready(Rml::RenderInterface* renderer);
@@ -90,6 +92,11 @@ namespace oot::ui::shell {
     // (ui/input/, the menus plan, phase 90); the screens that predate the shell ignore them.
     enum class Nav { Up, Down, Left, Right, Accept, Back, Clear, Default, SectionPrev, SectionNext };
     bool post_nav(Nav nav);
+    // A held direction let go, from the input stream: the About page makes its one move sound here.
+    void post_nav_release(Nav nav);
+    // The window's close button or Alt+F4 in play: "Close Game?" is asked first, and Yes quits
+    // through Save on quit as before. False when the menus are not up to ask, so the caller closes.
+    bool post_ask_close();
 
     // Any press at all, from the pump. The startup hint goes on the first one.
     void post_activity();

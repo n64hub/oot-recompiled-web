@@ -8,15 +8,19 @@
 # the code with a fresh history and none of the working records. Doing that by hand once means the
 # next update is done by hand differently, and the difference is what leaks something.
 #
-# WHAT IS LEFT OUT, and why each one (the user chose this shape on 2026-09-26, asked directly
-# because a public history cannot be unpublished):
+# WHAT IS LEFT OUT, and why each one (my decision of 2026-09-26, asked for directly because a
+# public history cannot be unpublished):
 #
-#   .tasks.md      8000 lines of working notes quoting the user verbatim dozens of times
+#   .tasks.md      working notes quoting the user verbatim dozens of times
 #   .worklog.md    the same, for finished work
-#   .scaffold/     4 MB of internal planning, including the security files' own reasoning
+#   .scaffold/     internal planning, including the security files' own reasoning
 #   CLAUDE.md      the project's working rules; quotes the user, and points at .scaffold paths
 #                  that do not exist in the public copy, so it would be revealing AND broken
 #   PLAN.md        a superseded narrative plan the file itself calls not authoritative
+#   .cleanup/      the clean code audits' plan, ledger, batch logs and report, which quote the
+#                  user and the working records (added 2026-11-20, open since 2026-11-03)
+#   .developer-studio/  the app's records for this project: my Feedback notes word for word,
+#                  the conflict decisions and the plan's phase kinds (added 2026-11-20)
 #
 # THE HISTORY IS FRESH, ONE COMMIT, and that is the point rather than a shortcut: the records are
 # in every commit of this repository's history, so publishing that history would publish them
@@ -36,13 +40,13 @@ $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $env:TEMP "oot-recompiled-public"
 
-$EXCLUDE = @(".tasks.md", ".worklog.md", "CLAUDE.md", "PLAN.md", ".scaffold")
+$EXCLUDE = @(".tasks.md", ".worklog.md", "CLAUDE.md", "PLAN.md", ".scaffold", ".cleanup", ".developer-studio")
 
 Write-Output "=== building the public copy ==="
 
 # git archive gives exactly the TRACKED files at HEAD: nothing ignored, nothing untracked, no
-# build output, no ROM, no recompiler output. Starting from the index rather than the working
-# directory is what makes that guarantee.
+# build output, no ROM, no recompiler output. Archiving the commit's own tree, not the index or
+# the working directory, is what makes that guarantee: staged and unstaged changes are not in it.
 if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -60,7 +64,7 @@ foreach ($name in $EXCLUDE) {
         Write-Output "  left out: $name"
     }
 }
-# AND PROVED GONE (the user, 2026-10-13: the planning, the worklog and the task list must never be
+# AND PROVED GONE (my note, 2026-10-13: the planning, the worklog and the task list must never be
 # synced to the public repository): a copy that still holds any of them is never pushed.
 foreach ($name in $EXCLUDE) {
     if (Test-Path (Join-Path $out $name)) {
@@ -83,7 +87,7 @@ if ($forbidden) {
 }
 Write-Output "  checked: nothing derived from the ROM"
 
-# ---- the fresh history --------------------------------------------------------------------
+# THE FRESH HISTORY: a new repository in the copy, with one commit.
 Push-Location $out
 & git init -b main --quiet
 & git add -A
@@ -92,10 +96,12 @@ Push-Location $out
 # submodule directories empty, and `git add` skips an empty directory, so a naive fresh repo ends
 # up with a .gitmodules naming five submodules and no gitlinks for any of them: `git submodule
 # update` then does nothing and the build fails on missing headers. Writing the gitlink entries
-# directly reproduces exactly what this repository has, pinned to the same commits.
-$subs = & git -C $root submodule status
+# directly reproduces exactly what this repository has, pinned to the same commits. They are read
+# from HEAD's own tree (mode 160000), not from `git submodule status`, which prints the commit each
+# submodule has checked out, moved locally or not.
+$subs = & git -C $root ls-tree -r HEAD
 foreach ($line in $subs) {
-    if ($line -match '^[\s+-]*([0-9a-f]{40})\s+(\S+)') {
+    if ($line -match '^160000 commit ([0-9a-f]{40})\t(.+)$') {
         $sha = $Matches[1]
         $path = $Matches[2]
         & git update-index --add --cacheinfo "160000,$sha,$path"
@@ -120,7 +126,6 @@ The history starts here on purpose. The working repository keeps its own, which
 is full of notes that were written to be read by one person.
 "@
 & git commit --quiet -m $message
-$count = (& git rev-list --count HEAD)
 $files = (& git ls-files | Measure-Object).Count
 Write-Output "  one commit, $files files"
 Pop-Location
@@ -132,8 +137,7 @@ if (-not $Push) {
     exit 0
 }
 
-# ---- pushing ------------------------------------------------------------------------------
-# The personal account, explicitly. Several accounts are logged in and the active one is whichever
+# PUSHING, AS THE PERSONAL ACCOUNT, explicitly. Several accounts are logged in and the active one is whichever
 # was used last; pushing a personal project from the work account is the kind of mistake that is
 # only noticed by somebody else.
 Write-Output "=== pushing ==="

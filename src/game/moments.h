@@ -233,6 +233,8 @@ namespace oot::moments {
     // its slot for the patch to write into the game and hand to Play_Init directly; -1 otherwise.
     // Once per launch.
     int take_boot_load();
+    // This start does not resume, whatever Resume on start says (a start from Reset, main/reset.h).
+    void skip_resume_on_start();
 
     // The harness's override of the autosave interval, in game updates; 0 leaves the row in charge.
     void set_autosave_override(uint32_t ticks);

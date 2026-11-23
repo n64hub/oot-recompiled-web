@@ -20,3 +20,6 @@
 	path = lib/oot
 	url = https://github.com/zeldaret/oot
 	shallow = true
+[submodule "lib/GamepadMotionHelpers"]
+	path = lib/GamepadMotionHelpers
+	url = https://github.com/JibbSmart/GamepadMotionHelpers

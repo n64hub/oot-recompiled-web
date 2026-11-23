@@ -8,8 +8,9 @@ numbers of periods), traced at evenly spaced heights by marching squares, so two
 side or one above the other meet without a seam.
 
 RmlUi can only repeat a bitmap image, and the program's renderer reads no bitmap format but its
-own, so the drawing is made at the size of the largest panel rather than as a small tile; it is an
-SVG, drawn sharp at any interface size.
+own, so the drawing is made large, at a docked panel's size, and the interface lays copies of it
+edge to edge over any ground bigger than that, such as the launcher's maximized window
+(src/ui/ui_survey.h); it is an SVG, drawn sharp at any interface size.
 
 Seeded, so it regenerates byte for byte.
 
@@ -26,7 +27,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "assets", "ui", "textures", "contours.svg")
 
-W, H = 1280, 1080        # the largest panel's size in dp
+W, H = 1280, 1080        # one copy's size in dp, the survey tokens' (assets/ui/tokens.rcss)
 STEP = 8                 # the sampling grid
 LEVELS = 9               # contour heights across the field's range
 SEED = 20261012

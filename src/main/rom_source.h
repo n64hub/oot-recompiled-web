@@ -30,23 +30,47 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "librecomp/game.hpp"
 
 namespace oot::rom {
 
+    // What a file's own header says it is, shown in the launcher the moment a ROM is chosen (a
+    // player's suggestion, 2026-11-22). The title is the header's text from the user's own file,
+    // read while the program runs and never written into ours (CLAUDE.md, tier 2); every other
+    // word here is ours. Empty fields mean the file is too short, or not a ROM, to say.
+    struct Details {
+        std::string title;     // the header's name, trimmed
+        std::string region;    // "USA (NTSC-U)", "Europe (PAL)", "Japan (NTSC-J)", ...
+        std::string version;   // "1.0", "1.1", "1.2"
+        std::string format;    // the file's byte order: "z64", "v64" or "n64"
+        bool this_game = false;  // the header's name is this game's
+        bool runs_here = false;  // the region and version this program is built for
+    };
+
+    // The header of a file as it is on disk, in any of the three byte orders.
+    Details describe(const std::vector<uint8_t>& bytes);
+
     // Validate a ROM where it lies and hand back its contents, byte order corrected, ready for
     // `recomp::set_rom_contents`. Writes nothing anywhere. The error values are the runtime's own
-    // so every caller's existing reporting keeps working unchanged.
+    // so every caller's existing reporting keeps working unchanged. `details`, when given, gets
+    // what the header says, whatever the verdict.
     recomp::RomValidationError validate(const std::filesystem::path& path,
                                         const recomp::GameEntry& entry,
-                                        std::vector<uint8_t>& contents);
+                                        std::vector<uint8_t>& contents,
+                                        Details* details = nullptr);
 
     // The same, on bytes already read (the file as it is on disk).
     recomp::RomValidationError validate_bytes(std::vector<uint8_t> bytes,
                                               const recomp::GameEntry& entry,
                                               std::vector<uint8_t>& contents);
+
+    // describe() on made-up headers, no ROM needed: each byte order, the region and version
+    // names, a short file and a file that is not a ROM. ROM_DETAILS_SELFTEST_OK or 1. The build
+    // runs it after every link.
+    int details_selftest();
 
     // The check against the user's own ROM, in memory, writing nothing: the ROM as it is is this
     // game, a byte changed past the header is another revision, a changed header name is another
