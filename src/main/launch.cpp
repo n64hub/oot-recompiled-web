@@ -792,6 +792,12 @@ namespace oot::launch {
                     // once it has landed. Otherwise now. A reset closes the same way, so it keeps
                     // its moment too (the owner, 2026-11-22).
                     if (!oot::moments::on_quit_requested(game_started())) {
+#ifdef __EMSCRIPTEN__
+                        // A page's Reset loads the page again (web/reset.cpp); the runtime is never shut down there.
+                        if (oot::reset::relaunch_if_armed()) {
+                            break;
+                        }
+#endif
                         ultramodern::quit();
                     }
                     break;

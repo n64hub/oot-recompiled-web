@@ -700,6 +700,10 @@ namespace {
         static bool s_quit_sent = false;
         if (!s_quit_sent && oot::moments::quit_pending() && oot::moments::quit_ready()) {
             s_quit_sent = true;
+#ifdef __EMSCRIPTEN__
+            // A page quits only for Reset, which loads the page again once the moment is kept (web/reset.cpp).
+            if (!oot::reset::relaunch_if_armed())
+#endif
             ultramodern::quit();
         }
         SDL_Event ev;
@@ -1435,6 +1439,14 @@ void oot::boot::run(SDL_Window* window,
     // runtime comes up with the launcher over its dummy frames and Play starts the game from
     // there, which is the reference project's own shape.
     oot::launch::init(game_id, cli_rom_path);
+#ifdef __EMSCRIPTEN__
+    // A page's Reset loaded it again (web/reset.cpp): straight into the game, as --reset-from starts the desktop
+    // program, while the ROM it played is still stored. Otherwise the launcher, as on any load.
+    if (oot::reset::previous_id(argc, argv) != 0 && oot::launch::rom_ready()) {
+        g_play_now = true;
+        oot::moments::skip_resume_on_start();
+    }
+#endif
 
     // The window's shape, then the window: as the launcher, a small borderless window with our
     // own chrome and the settings' window mode held back until Play; with --play, the game's

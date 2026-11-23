@@ -1032,6 +1032,12 @@ namespace {
         if (screen == Screen::Graphics) {
             for (const char* key : { "window", "alwaysontop", "resolution", "downsampling", "aspect", "antialiasing", "renderdistance",
                                      "framerate", "counter", "texturepack" }) {
+#ifdef __EMSCRIPTEN__
+                // A page can't hold the browser's window over others (web/stubs.cpp, oot::caption).
+                if (std::string_view(key) == "alwaysontop") {
+                    continue;
+                }
+#endif
                 add(key);
             }
             // Texture detail only while a pack is chosen (the user, 2026-10-07: "when you enable it,

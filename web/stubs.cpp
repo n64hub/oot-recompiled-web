@@ -1,19 +1,45 @@
 // The page's stand-ins for the parts of the program a browser has no use for, or no way to do: the crash handler
 // (Windows' exception filter), the installer's shortcuts and registry entries, the update check (WinHTTP, and a page
-// is updated by publishing it), the signature check (WinVerifyTrust) and the video recorder (Media Foundation). Each
-// answers as the desktop program does when the thing is off or absent, so the code that calls it runs unchanged.
-// Built only by web/page.cmake, in place of crash_handler.cpp, install.cpp, updates.cpp, signature.cpp and video.cpp.
+// is updated by publishing it), the signature check (WinVerifyTrust), the video recorder (Media Foundation), and the
+// window's caption buttons as Windows' own with Always on top (Win32 and the desktop window manager: on a page the
+// window is the canvas, which the page sizes and the browser frames). Each answers as the desktop program does when
+// the thing is off or absent, so the code that calls it runs unchanged.
+// Built only by web/page.cmake, in place of crash_handler.cpp, install.cpp, updates.cpp, signature.cpp, video.cpp and
+// caption.cpp.
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
 
+#include "main/caption.h"
 #include "main/crash_handler.h"
 #include "main/install.h"
 #include "main/signature.h"
 #include "main/updates.h"
 #include "main/video.h"
+
+// The page shows no window buttons (ui_shell.cpp), so none is hovered or pressed, and the window is never Windows'.
+namespace oot::caption {
+    void attach(SDL_Window*, const Actions&) {}
+    void restyle() {}
+    void set_buttons(const Rect&, const Rect&, const Rect&) {}
+    Button hovered() { return Button::None; }
+    Button pressed() { return Button::None; }
+    bool maximized() { return false; }
+    void set_topmost(bool) {}
+    Button button_at(int x, int y, const Rect (&rects)[3]) {
+        static constexpr Button ORDER[3] = { Button::Minimize, Button::Maximize, Button::Close };
+        for (int i = 0; i < 3; ++i) {
+            const Rect& r = rects[i];
+            if (r.w > 0 && r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+                return ORDER[i];
+            }
+        }
+        return Button::None;
+    }
+    int selftest() { return 0; }
+}
 
 namespace oot::crash {
     void install() {}

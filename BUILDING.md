@@ -3,7 +3,7 @@
 This fork's `main` is OoT: Recompiled built with [Emscripten](https://emscripten.org) into a page,
 `OoTRecompiled.html`, that draws through WebGPU. The desktop build is upstream's, unchanged (the README says how);
 everything for the page is behind `__EMSCRIPTEN__` or in `web/` and `tools/`. `lib/rt64`, `lib/N64ModernRuntime`,
-`lib/RmlUi` and `lib/lunasvg` are upstream's own submodules, at its commits, and
+`lib/RmlUi`, `lib/lunasvg` and `lib/GamepadMotionHelpers` are upstream's own submodules, at its commits, and
 [N64Recomp-browser](https://github.com/n64hub/N64Recomp-browser) (`lib/N64Recomp-browser`) patches the checkouts
 of rt64 and the runtime with the web support. `web/page.cmake`'s header says what else differs on a page.
 

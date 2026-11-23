@@ -7,12 +7,14 @@
 # - RT64 is the pinned submodule with N64Recomp-browser's web support patched in. rt64-patches/ (the ray tracing path,
 #   the video recorder's picture) is D3D12 work and stays out, so the two calls into it are left out on a page.
 # - The parts a browser has no use for or no way to do (the crash handler, the installer, the update check, the
-#   signature check, the video recorder) are web/stubs.cpp, which answers as each does when it is off.
+#   signature check, the video recorder, the window's caption buttons as Windows' own and Always on top) are
+#   web/stubs.cpp, which answers as each does when it is off.
+# - Reset reloads the page straight into the game (web/reset.cpp), where the desktop program starts itself again.
 # - The interface shaders are WGSL, made from src/ui/shaders/ui.hlsl by dxc and naga as RT64's own are.
 # - The ROM comes from the browser's file picker (lib/N64Recomp-browser/frontend/file_picker.h) and is kept in the
 #   browser's storage (src/main/places.cpp, launch.cpp).
 # - The launcher asks nothing about updates or a copy of the ROM, and has no Quit, window buttons, Check for updates
-#   row or Video page (ui_shell.cpp). The interface size's Automatic follows the canvas, the window and the display
+#   or Always on top row or Video page (ui_shell.cpp). The interface size's Automatic follows the canvas, the window and the display
 #   both (ui_shell.cpp's pump).
 # - The menu's own sounds play on the page's one sound output with the game's (web/web_audio.h), in the launcher only:
 #   in the game the game plays its own for the menus.
@@ -152,7 +154,7 @@ add_custom_command(
     COMMENT "Embedding the patch binary")
 
 # The desktop build's sources, with web/stubs.cpp in place of crash_handler.cpp, install.cpp, updates.cpp,
-# signature.cpp and video.cpp, and web/survey.cpp.
+# signature.cpp, video.cpp and caption.cpp, web/reset.cpp in place of reset.cpp, and web/survey.cpp.
 add_executable(OoTRecompiled
     src/main/main.cpp
     src/game/register_patches.cpp
@@ -167,6 +169,9 @@ add_executable(OoTRecompiled
     src/ui/ui_fonts.cpp
     src/ui/ui_vectors.cpp
     src/ui/ui_gradient.cpp
+    src/ui/ui_survey.cpp
+    src/ui/ui_moment_row.cpp
+    src/ui/ui_text_row.cpp
     src/ui/input/ui_input_core.cpp
     src/ui/input/ui_input.cpp
     src/ui/nav/nav_engine.cpp
@@ -189,6 +194,7 @@ add_executable(OoTRecompiled
     src/ui/ui_warps.cpp
     src/main/launch.cpp
     src/main/rom_source.cpp
+    src/main/gyro.cpp
     src/main/places.cpp
     src/main/recorder.cpp
     src/main/sweep.cpp
@@ -218,6 +224,7 @@ add_executable(OoTRecompiled
     src/game/libultra_shims.cpp
     src/game/recomp_api.cpp
     web/stubs.cpp
+    web/reset.cpp
     web/survey.cpp
     web/web_audio.cpp
     ${RECOMPILED_PATCHES}
@@ -233,6 +240,8 @@ target_include_directories(OoTRecompiled SYSTEM PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/hlslpp/include
     ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/inc
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty
+    # Gyro aiming's calibration and player space turn (src/main/gyro.cpp), header only.
+    ${CMAKE_SOURCE_DIR}/lib/GamepadMotionHelpers
     # FreeType's own headers, for the fonts' self test (src/ui/ui_fonts.cpp).
     "${EMSCRIPTEN_SYSROOT}/include/freetype2")
 target_compile_definitions(OoTRecompiled PRIVATE NOMINMAX HLSL_CPU)
